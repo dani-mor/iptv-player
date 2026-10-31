@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>IPTV Player</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<!-- Login screen -->
+<section id="login-screen" class="screen">
+  <form id="login-form" class="login-card">
+    <h1>IPTV Player</h1>
+    <p class="subtitle">Connect to your Xtream Codes compatible provider</p>
+
+    <label>Server address
+      <input id="in-server" type="text" placeholder="http://my-provider.com:8080" required autocomplete="off" />
+    </label>
+    <label>Username
+      <input id="in-username" type="text" required autocomplete="off" />
+    </label>
+    <label>Password
+      <input id="in-password" type="password" required autocomplete="off" />
+    </label>
+
+    <details id="advanced-details">
+      <summary>Advanced</summary>
+      <label>User-Agent sent to provider
+        <input id="in-ua" type="text" value="IPTVSmartersPlayer" />
+      </label>
+      <p class="hint">Some providers reject requests unless the User-Agent matches a known player (e.g. <code>IPTVSmartersPlayer</code>, <code>VLC</code>). Change this if you get 403 errors.</p>
+      <label class="checkbox-row">
+        <input id="in-remember" type="checkbox" checked />
+        Remember these credentials on this device
+      </label>
+    </details>
+
+    <button type="submit" id="login-btn">Connect</button>
+    <p id="login-error" class="error-msg" hidden></p>
+  </form>
+</section>
+
+<!-- Main app -->
+<section id="app-screen" class="screen" hidden>
+  <header class="topbar">
+    <button id="theater-back-btn" class="back-btn" hidden>&larr; Browse</button>
+    <div class="brand">IPTV Player</div>
+    <nav id="tabs" class="tabs">
+      <button class="tab-btn active" data-type="live">Live TV</button>
+      <button class="tab-btn" data-type="vod">Movies</button>
+      <button class="tab-btn" data-type="series">TV Shows</button>
+    </nav>
+    <div class="topbar-right">
+      <input id="search-box" type="search" placeholder="Search this category…" />
+      <button id="search-all-btn" title="Load every category so search covers everything">Search all</button>
+      <span id="account-info" class="account-info"></span>
+      <button id="logout-btn">Log out</button>
+    </div>
+  </header>
+
+  <div id="main-layout" class="main-layout">
+    <aside id="category-list" class="category-list"></aside>
+    <main id="content-grid" class="content-grid"></main>
+  </div>
+
+  <!-- Live TV theater view: big player + program info + channel rail -->
+  <div id="theater-view" class="theater-view" hidden>
+    <div class="theater-player-col">
+      <div class="theater-video-wrap">
+        <video id="theater-video" controls autoplay></video>
+      </div>
+      <div class="theater-info">
+        <div class="theater-info-top">
+          <h2 id="theater-channel-name"></h2>
+          <div class="theater-controls">
+            <button id="theater-live-btn" class="live-btn" title="Jump to live edge"><span class="live-dot"></span>Live</button>
+            <button id="theater-mute-btn" class="icon-btn" title="Mute">&#128266;</button>
+            <input id="theater-volume" class="volume-slider" type="range" min="0" max="1" step="0.05" value="1" title="Volume" />
+          </div>
+        </div>
+        <div id="theater-epg" class="theater-epg"></div>
+      </div>
+    </div>
+    <aside class="theater-channel-rail">
+      <input id="theater-search" type="search" placeholder="Filter channels…" />
+      <div id="theater-channel-list" class="theater-channel-list"></div>
+    </aside>
+  </div>
+</section>
+
+<!-- Series detail view -->
+<section id="series-screen" class="screen" hidden>
+  <header class="topbar">
+    <button id="series-back-btn" class="back-btn">&larr; Back</button>
+    <div id="series-title" class="brand"></div>
+  </header>
+  <div id="series-body" class="series-body"></div>
+</section>
+
+<!-- Player modal -->
+<div id="player-modal" class="player-modal" hidden>
+  <div class="player-modal-inner">
+    <div class="player-header">
+      <span id="player-title"></span>
+      <button id="player-close-btn">&times;</button>
+    </div>
+    <video id="video-el" controls autoplay></video>
+    <p id="player-error" class="error-msg" hidden></p>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
