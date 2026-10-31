@@ -1,6 +1,14 @@
 const express = require('express');
+const fs = require('fs');
 const path = require('path');
 const { Readable, pipeline } = require('stream');
+
+// Optional settings (e.g. TMDB_API_KEY) can live in a .env file next to this one.
+try {
+  process.loadEnvFile(path.join(__dirname, '.env'));
+} catch {
+  // no .env, or Node < 20.12
+}
 
 const app = express();
 const PORT = process.env.PORT || 4040;
@@ -129,6 +137,119 @@ async function fetchUpstream(url, options) {
   }
 }
 
+// ---------- Faster movie start ----------
+// The provider caps each connection at ~0.6 MB/s, and many movie files keep their index
+// (the mp4 "moov" box) at the very end. Before playing, the browser fetches that tail
+// (often 3-10 MB) in one request, which took 5-30s. When a request asks for the tail of
+// a file, fetch it as a few parallel ranges instead and stream them back in order.
+// Recent tails are cached so reopening or resuming a movie starts at once.
+
+const TAIL_MIN_CHUNK = 512 * 1024;
+const TAIL_PARALLEL = 4;
+const TAIL_MIN = 2 * 1024 * 1024;
+const TAIL_MAX = 64 * 1024 * 1024;
+const TAIL_CACHE_MAX = 128 * 1024 * 1024;
+const tailCache = new Map(); // `${targetUrl}|${start}` -> { buf, total }
+let tailCacheBytes = 0;
+
+function rememberTail(key, entry) {
+  if (tailCache.has(key)) return;
+  tailCache.set(key, entry);
+  tailCacheBytes += entry.buf.length;
+  for (const [k, v] of tailCache) {
+    if (tailCacheBytes <= TAIL_CACHE_MAX) break;
+    tailCache.delete(k);
+    tailCacheBytes -= v.buf.length;
+  }
+}
+
+// Returns { start, end, total } for an open-ended range request near the end of a file.
+function movieTailRange(rangeHeader, upstream) {
+  const req = /^bytes=(\d+)-$/.exec(rangeHeader || '');
+  const cr = /bytes (\d+)-(\d+)\/(\d+)/.exec(upstream.headers.get('content-range') || '');
+  if (!req || !cr || upstream.status !== 206) return null;
+  const start = Number(req[1]);
+  const total = Number(cr[3]);
+  const size = total - start;
+  if (start === 0 || size < TAIL_MIN || size > TAIL_MAX) return null;
+  return { start, end: total - 1, total };
+}
+
+async function fetchRange(url, ua, from, to, signal) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const r = await fetch(url, {
+        headers: { 'User-Agent': ua, Range: `bytes=${from}-${to}` },
+        signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
+      });
+      if (r.status !== 206) throw new Error(`HTTP ${r.status}`);
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (buf.length !== to - from + 1) throw new Error('short read');
+      return buf;
+    } catch (e) {
+      if (signal.aborted || attempt >= 2) throw e;
+    }
+  }
+}
+
+async function sendTailInParallel(res, fetchUrl, cacheUrl, ua, { start, end, total }, contentType, signal) {
+  res.status(206);
+  res.set({
+    'Content-Type': contentType || 'video/mp4',
+    'Content-Length': String(end - start + 1),
+    'Content-Range': `bytes ${start}-${end}/${total}`,
+    'Accept-Ranges': 'bytes',
+  });
+
+  const key = `${cacheUrl}|${start}`;
+  const cached = tailCache.get(key);
+  if (cached && cached.total === total) {
+    res.end(cached.buf);
+    return;
+  }
+
+  const ranges = [];
+  // One round of equal parts: each range request costs ~0.7s before data flows.
+  const chunk = Math.max(TAIL_MIN_CHUNK, Math.ceil((end - start + 1) / TAIL_PARALLEL));
+  for (let a = start; a <= end; a += chunk) ranges.push([a, Math.min(end, a + chunk - 1)]);
+  const done = new Map();
+  const parts = [];
+  let nextToFetch = 0;
+  let nextToWrite = 0;
+  let flushing = false;
+
+  // Writes finished chunks strictly in order, waiting for the client to drain.
+  const flush = async () => {
+    if (flushing) return;
+    flushing = true;
+    while (done.has(nextToWrite)) {
+      const buf = done.get(nextToWrite);
+      done.delete(nextToWrite);
+      parts.push(buf);
+      nextToWrite += 1;
+      if (!res.write(buf)) await new Promise((r) => res.once('drain', r));
+    }
+    flushing = false;
+  };
+
+  const worker = async () => {
+    while (nextToFetch < ranges.length && !signal.aborted) {
+      const i = nextToFetch++;
+      done.set(i, await fetchRange(fetchUrl, ua, ranges[i][0], ranges[i][1], signal));
+      await flush();
+    }
+  };
+
+  try {
+    await Promise.all(Array.from({ length: TAIL_PARALLEL }, worker));
+    await flush();
+    res.end();
+    rememberTail(key, { buf: Buffer.concat(parts), total });
+  } catch {
+    res.destroy();
+  }
+}
+
 async function handleMediaProxy(req, res, targetUrl, ua) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -166,6 +287,13 @@ async function handleMediaProxy(req, res, targetUrl, ua) {
       res.set('Content-Type', 'application/vnd.apple.mpegurl');
       res.set('Cache-Control', 'no-store');
       res.send(rewritePlaylist(text, targetUrl, ua));
+      return;
+    }
+
+    const tail = movieTailRange(req.headers.range, upstream);
+    if (tail) {
+      upstream.body?.cancel().catch(() => {});
+      await sendTailInParallel(res, upstream.url || targetUrl, targetUrl, ua, tail, contentType, controller.signal);
       return;
     }
 
@@ -217,6 +345,280 @@ app.get('/proxy/media', async (req, res) => {
   const { url, ua } = req.query;
   if (!url) return res.status(400).json({ error: 'url is required' });
   await handleMediaProxy(req, res, url, ua || DEFAULT_UA);
+});
+
+// ---------- Show artwork fallback (TVmaze) ----------
+// Some providers serve series covers from hosts that are offline. When the provider's
+// image fails, the frontend asks here; we match the show on TVmaze (free, keyless) and
+// cache results on disk so each show is only looked up once.
+
+const TVMAZE = 'https://api.tvmaze.com';
+const ARTWORK_CACHE_FILE = path.join(__dirname, '.artwork-cache.json');
+const ARTWORK_MISS_TTL_MS = 7 * 24 * 3600 * 1000;
+const TVMAZE_GAP_MS = 300;
+
+let artworkCache = {};
+try {
+  artworkCache = JSON.parse(fs.readFileSync(ARTWORK_CACHE_FILE, 'utf8'));
+} catch {
+  artworkCache = {};
+}
+let artworkSaveTimer = null;
+function saveArtworkCache() {
+  clearTimeout(artworkSaveTimer);
+  artworkSaveTimer = setTimeout(() => {
+    fs.writeFile(ARTWORK_CACHE_FILE, JSON.stringify(artworkCache), () => {});
+  }, 2000);
+}
+
+// TVmaze allows roughly 20 calls / 10s per IP, so calls go out one at a time with a gap.
+let tvmazeChain = Promise.resolve();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function tvmaze(pathname) {
+  const run = async () => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { signal, cancel } = withTimeout(REQUEST_TIMEOUT_MS);
+      try {
+        const r = await fetch(TVMAZE + pathname, { signal });
+        if (r.status === 429) { await sleep(2000 * (attempt + 1)); continue; }
+        if (r.status === 404) return null;
+        if (!r.ok) throw new Error(`TVmaze HTTP ${r.status}`);
+        return await r.json();
+      } finally {
+        cancel();
+      }
+    }
+    throw new Error('TVmaze rate limited');
+  };
+  const p = tvmazeChain.then(run);
+  tvmazeChain = p.catch(() => {}).then(() => sleep(TVMAZE_GAP_MS));
+  return p;
+}
+
+// Optional: with a (free) TMDB API key, shows are matched exactly by the provider's tmdb_id.
+// Accepts either a v3 API key or a v4 read access token.
+const TMDB_KEY = process.env.TMDB_API_KEY || '';
+const TMDB_IMG = 'https://image.tmdb.org/t/p';
+async function tmdb(pathname, extraQuery = '') {
+  const bearer = TMDB_KEY.length > 40;
+  const params = [extraQuery, bearer ? '' : `api_key=${encodeURIComponent(TMDB_KEY)}`].filter(Boolean).join('&');
+  const { signal, cancel } = withTimeout(REQUEST_TIMEOUT_MS);
+  try {
+    const r = await fetch(`https://api.themoviedb.org/3${pathname}${params ? `?${params}` : ''}`, {
+      headers: bearer ? { Authorization: `Bearer ${TMDB_KEY}` } : {},
+      signal,
+    });
+    if (r.status === 404) return null;
+    if (!r.ok) throw new Error(`TMDB HTTP ${r.status}`);
+    return await r.json();
+  } finally {
+    cancel();
+  }
+}
+
+// Keyless exact match: Wikidata maps TMDB TV ids (P4983) to TVmaze ids (P8600) and IMDb ids (P345).
+const WIKIDATA_API = 'https://www.wikidata.org/w/api.php';
+const WIKIDATA_UA = 'iptv-player/1.0 (local IPTV web player; artwork lookup)';
+// Wikimedia rate-limits bursts, so these go out one at a time too.
+let wikidataChain = Promise.resolve();
+function wikidata(params) {
+  const run = async () => {
+    const { signal, cancel } = withTimeout(REQUEST_TIMEOUT_MS);
+    try {
+      const r = await fetch(`${WIKIDATA_API}?${new URLSearchParams({ format: 'json', ...params })}`, {
+        headers: { 'User-Agent': WIKIDATA_UA },
+        signal,
+      });
+      if (!r.ok) throw new Error(`Wikidata HTTP ${r.status}`);
+      return await r.json();
+    } finally {
+      cancel();
+    }
+  };
+  const p = wikidataChain.then(run);
+  wikidataChain = p.catch(() => sleep(5000)).then(() => sleep(250));
+  return p;
+}
+
+// Lookups are batched: shows requested within a short window share one search and one
+// entity fetch (up to 40 ids), which keeps us far below Wikimedia's rate limits.
+const WIKIDATA_BATCH = 40;
+const wikidataPending = new Map(); // tmdbId -> [{ resolve, reject }]
+let wikidataTimer = null;
+
+function wikidataIdsForTmdb(tmdbId) {
+  return new Promise((resolve, reject) => {
+    const key = String(tmdbId);
+    if (!wikidataPending.has(key)) wikidataPending.set(key, []);
+    wikidataPending.get(key).push({ resolve, reject });
+    if (!wikidataTimer) wikidataTimer = setTimeout(flushWikidata, 400);
+  });
+}
+
+async function flushWikidata() {
+  wikidataTimer = null;
+  const batch = [...wikidataPending.entries()].slice(0, WIKIDATA_BATCH);
+  batch.forEach(([id]) => wikidataPending.delete(id));
+  if (wikidataPending.size) wikidataTimer = setTimeout(flushWikidata, 400);
+  const settle = (fn) => batch.forEach(([id, waiters]) => waiters.forEach((w) => fn(w, id)));
+  try {
+    const search = await wikidata({
+      action: 'query', list: 'search', srlimit: '50', srprop: '',
+      srsearch: `haswbstatement:${batch.map(([id]) => `P4983=${id}`).join('|')}`,
+    });
+    const qids = ((search.query && search.query.search) || []).map((x) => x.title);
+    const found = {};
+    if (qids.length) {
+      const ent = await wikidata({ action: 'wbgetentities', ids: qids.join('|'), props: 'claims' });
+      Object.values(ent.entities || {}).forEach((e) => {
+        const claims = e.claims || {};
+        const value = (prop) => {
+          const c = (claims[prop] || []).find((x) => x.mainsnak && x.mainsnak.datavalue);
+          return c ? c.mainsnak.datavalue.value : null;
+        };
+        const ids = { tvmaze: value('P8600'), imdb: value('P345') };
+        (claims.P4983 || []).forEach((c) => {
+          if (c.mainsnak && c.mainsnak.datavalue) found[String(c.mainsnak.datavalue.value)] = ids;
+        });
+      });
+    }
+    settle((w, id) => w.resolve(found[id] || null));
+  } catch (e) {
+    settle((w) => w.reject(e));
+  }
+}
+
+async function tvmazeShowFromTmdb(tmdbId) {
+  const ids = await wikidataIdsForTmdb(tmdbId);
+  if (!ids) return null;
+  if (ids.tvmaze) return tvmaze(`/shows/${encodeURIComponent(ids.tvmaze)}`);
+  return ids.imdb ? tvmaze(`/lookup/shows?imdb=${encodeURIComponent(ids.imdb)}`) : null;
+}
+
+const normTitle = (s) => String(s || '')
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase().replace(/\u00e6/g, 'ae').replace(/\u0153/g, 'oe').replace(/\u00df/g, 'ss')
+  .replace(/&/g, 'and').replace(/[^a-z0-9]+/g, ' ').trim();
+
+// Provider names look like "Payback (2023)", "|ES| Title", "ES - Title [4K]".
+function cleanShowName(name) {
+  return String(name || '')
+    .replace(/^\s*(\|[^|]{1,6}\||[A-Z]{2,3}\s*[-:|]\s+)/, '')
+    .replace(/\[[^\]]*\]/g, '')
+    .replace(/\((19|20)\d{2}\)/g, '')
+    .replace(/\b(4K|FHD|UHD|HD|MULTI|SUB|VOSE|DUAL)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function pickShow(results, name, year) {
+  const want = normTitle(name);
+  const scored = (results || []).map(({ score, show }) => {
+    const showYear = show.premiered ? Number(show.premiered.slice(0, 4)) : null;
+    const names = [show.name, ...((show._embedded && show._embedded.akas) || []).map((a) => a.name)].map(normTitle);
+    const exact = names.includes(want);
+    const yearOk = year && showYear ? Math.abs(showYear - year) <= 1 : null;
+    return { show, score, exact, yearOk };
+  });
+  // Year agreement is the strongest signal; without a year, require an exact title.
+  return (year && scored.find((s) => s.yearOk && (s.exact || s.score > 0.6)))
+    || scored.find((s) => s.exact && s.yearOk !== false)
+    || null;
+}
+
+app.get('/api/artwork/series', async (req, res) => {
+  const name = cleanShowName(req.query.name);
+  const yearMatch = /(19|20)\d{2}/.exec(req.query.year || '') || /\(((19|20)\d{2})\)/.exec(req.query.name || '');
+  const year = yearMatch ? Number(yearMatch[1] || yearMatch[0]) : null;
+  const tmdbId = Number(req.query.tmdb) || null;
+  if (!name && !tmdbId) return res.json({ id: null });
+  const key = tmdbId ? `${TMDB_KEY ? 't' : 'w'}:${tmdbId}` : `s:${normTitle(name)}:${year || ''}`;
+  const hit = artworkCache[key];
+  if (hit && (hit.id || Date.now() - hit.at < ARTWORK_MISS_TTL_MS)) return res.json(hit);
+  try {
+    if (TMDB_KEY && tmdbId) {
+      const show = await tmdb(`/tv/${tmdbId}`);
+      const entry = {
+        id: show ? `tmdb:${tmdbId}` : null,
+        poster: show && show.poster_path ? `${TMDB_IMG}/w342${show.poster_path}` : null,
+        posterLarge: show && show.poster_path ? `${TMDB_IMG}/w780${show.poster_path}` : null,
+        at: Date.now(),
+      };
+      artworkCache[key] = entry;
+      saveArtworkCache();
+      return res.json(entry);
+    }
+    let show = null;
+    let lookupFailed = false;
+    if (tmdbId) {
+      show = await tvmazeShowFromTmdb(tmdbId).catch(() => { lookupFailed = true; return null; });
+    }
+    if (!show && name) {
+      const found = pickShow(await tvmaze(`/search/shows?q=${encodeURIComponent(name)}`), name, year);
+      show = found && found.show;
+    }
+    // A miss caused by an outage or rate limit shouldn't be remembered for a week.
+    if (!show && lookupFailed) return res.json({ id: null, poster: null });
+    const image = show && show.image;
+    const entry = {
+      id: show ? show.id : null,
+      poster: image ? image.medium || image.original : null,
+      posterLarge: image ? image.original || image.medium : null,
+      at: Date.now(),
+    };
+    artworkCache[key] = entry;
+    saveArtworkCache();
+    res.json(entry);
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+// Backdrop + per-episode stills for one TVmaze show, keyed "season:episode".
+app.get('/api/artwork/show/:id', async (req, res) => {
+  const raw = String(req.params.id);
+  const tmdbId = raw.startsWith('tmdb:') ? Number(raw.slice(5)) : null;
+  const id = tmdbId ? null : Number(raw);
+  if (!id && !(tmdbId && TMDB_KEY)) return res.status(400).json({ error: 'bad id' });
+  const key = `d:${raw}`;
+  const hit = artworkCache[key];
+  if (hit && Date.now() - hit.at < ARTWORK_MISS_TTL_MS) return res.json(hit);
+  try {
+    if (tmdbId) {
+      const show = await tmdb(`/tv/${tmdbId}`);
+      const seasons = ((show && show.seasons) || []).map((x) => x.season_number).filter((n) => n > 0).slice(0, 20);
+      const full = seasons.length ? await tmdb(`/tv/${tmdbId}`, `append_to_response=${seasons.map((n) => `season/${n}`).join(',')}`) : null;
+      const stills = {};
+      seasons.forEach((n) => {
+        ((full && full[`season/${n}`] && full[`season/${n}`].episodes) || []).forEach((ep) => {
+          if (ep.still_path) stills[`${n}:${ep.episode_number}`] = `${TMDB_IMG}/w300${ep.still_path}`;
+        });
+      });
+      const entry = { backdrop: show && show.backdrop_path ? `${TMDB_IMG}/w1280${show.backdrop_path}` : null, episodes: stills, at: Date.now() };
+      artworkCache[key] = entry;
+      saveArtworkCache();
+      return res.json(entry);
+    }
+    const [images, episodes] = await Promise.all([
+      tvmaze(`/shows/${id}/images`),
+      tvmaze(`/shows/${id}/episodes`),
+    ]);
+    const bg = (images || []).filter((i) => i.type === 'background').sort((a, b) => Number(b.main) - Number(a.main))[0];
+    const stills = {};
+    (episodes || []).forEach((ep) => {
+      if (ep.image) stills[`${ep.season}:${ep.number}`] = ep.image.medium || ep.image.original;
+    });
+    const entry = {
+      backdrop: bg ? (bg.resolutions.original || bg.resolutions.medium || {}).url || null : null,
+      episodes: stills,
+      at: Date.now(),
+    };
+    artworkCache[key] = entry;
+    saveArtworkCache();
+    res.json(entry);
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
 });
 
 app.listen(PORT, () => {

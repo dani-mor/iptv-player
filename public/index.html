@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="color-scheme" content="dark" />
 <title>IPTV Player</title>
 <link rel="icon" type="image/png" href="icon.png" />
 <link rel="stylesheet" href="styles.css" />
@@ -12,18 +13,15 @@
 <!-- Login screen -->
 <section id="login-screen" class="screen">
   <form id="login-form" class="login-card">
+    <img class="login-icon" src="icon.svg" alt="" />
     <h1>IPTV Player</h1>
-    <p class="subtitle">Connect to your Xtream Codes compatible provider</p>
+    <p class="subtitle">Sign in with your Xtream Codes provider</p>
 
-    <label>Server address
-      <input id="in-server" type="text" placeholder="http://my-provider.com:8080" required autocomplete="off" />
-    </label>
-    <label>Username
-      <input id="in-username" type="text" required autocomplete="off" />
-    </label>
-    <label>Password
-      <input id="in-password" type="password" required autocomplete="off" />
-    </label>
+    <div class="field-group">
+      <input id="in-server" type="text" placeholder="Server address" required autocomplete="off" />
+      <input id="in-username" type="text" placeholder="Username" required autocomplete="off" />
+      <input id="in-password" type="password" placeholder="Password" required autocomplete="off" />
+    </div>
 
     <details id="advanced-details">
       <summary>Advanced</summary>
@@ -37,7 +35,7 @@
       </label>
     </details>
 
-    <button type="submit" id="login-btn">Connect</button>
+    <button type="submit" id="login-btn" class="btn-primary">Connect</button>
     <p id="login-error" class="error-msg" hidden></p>
   </form>
 </section>
@@ -45,30 +43,53 @@
 <!-- Main app -->
 <section id="app-screen" class="screen" hidden>
   <header class="topbar">
-    <button id="theater-back-btn" class="back-btn" hidden>&larr; Browse</button>
-    <div class="brand">IPTV Player</div>
-    <nav id="tabs" class="tabs">
+    <div class="topbar-left">
+      <button id="back-btn" class="back-btn" hidden>
+        <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg><span id="back-label">Back</span>
+      </button>
+      <div id="brand" class="brand">IPTV</div>
+    </div>
+    <nav id="tabs" class="segmented">
       <button class="tab-btn active" data-type="live">Live TV</button>
       <button class="tab-btn" data-type="vod">Movies</button>
       <button class="tab-btn" data-type="series">TV Shows</button>
     </nav>
     <div class="topbar-right">
-      <input id="search-box" type="search" placeholder="Search this category…" />
-      <button id="search-all-btn" title="Load every category so search covers everything">Search all</button>
+      <label id="search-wrap" class="search-wrap">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+        <input id="search-box" type="search" placeholder="Search" />
+      </label>
       <span id="account-info" class="account-info"></span>
-      <button id="logout-btn">Log out</button>
+      <button id="logout-btn" class="icon-btn subtle" title="Log out">
+        <svg viewBox="0 0 24 24"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 16l-4-4 4-4M6 12h10"/></svg>
+      </button>
     </div>
   </header>
 
-  <div id="main-layout" class="main-layout">
+  <!-- Browse -->
+  <div id="browse-view" class="main-layout view">
     <aside id="category-list" class="category-list"></aside>
-    <main id="content-grid" class="content-grid"></main>
+    <main id="content-area" class="content-area">
+      <section id="shelf" class="shelf" hidden>
+        <h3 id="shelf-title" class="section-title"></h3>
+        <div id="shelf-row" class="shelf-row"></div>
+      </section>
+      <div class="grid-header">
+        <h3 id="grid-title" class="section-title"></h3>
+        <div id="live-mode" class="segmented small" hidden>
+          <button data-mode="grid" class="tab-btn active">Channels</button>
+          <button data-mode="guide" class="tab-btn">Guide</button>
+        </div>
+      </div>
+      <div id="content-grid" class="content-grid"></div>
+      <div id="guide" class="guide" hidden></div>
+    </main>
   </div>
 
   <!-- Live TV theater view: big player + program info + channel rail -->
-  <div id="theater-view" class="theater-view" hidden>
+  <div id="theater-view" class="theater-view view" hidden>
     <div class="theater-player-col">
-      <div class="theater-video-wrap">
+      <div class="video-wrap">
         <video id="theater-video" controls autoplay></video>
       </div>
       <div class="theater-info">
@@ -76,42 +97,59 @@
           <h2 id="theater-channel-name"></h2>
           <div class="theater-controls">
             <button id="theater-live-btn" class="live-btn" title="Jump to live"><span class="live-dot"></span><span class="live-label">Go live</span></button>
-            <button id="theater-mute-btn" class="icon-btn" title="Mute">&#128266;</button>
+            <button id="theater-fav-btn" class="icon-btn" title="Add to favourites"></button>
+            <button id="theater-mute-btn" class="icon-btn" title="Mute"></button>
             <input id="theater-volume" class="volume-slider" type="range" min="0" max="1" step="0.05" value="1" title="Volume" />
           </div>
         </div>
         <div id="theater-epg" class="theater-epg"></div>
+        <section id="theater-schedule" class="schedule" hidden></section>
       </div>
     </div>
     <aside class="theater-channel-rail">
-      <input id="theater-search" type="search" placeholder="Filter channels…" />
+      <label class="search-wrap wide">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+        <input id="theater-search" type="search" placeholder="Filter channels" />
+      </label>
       <div id="theater-channel-list" class="theater-channel-list"></div>
     </aside>
   </div>
-</section>
 
-<!-- Series detail view -->
-<section id="series-screen" class="screen" hidden>
-  <header class="topbar">
-    <button id="series-back-btn" class="back-btn">&larr; Back</button>
-    <div id="series-title" class="brand"></div>
-  </header>
-  <div id="series-body" class="series-body"></div>
-</section>
-
-<!-- Player modal -->
-<div id="player-modal" class="player-modal" hidden>
-  <div class="player-modal-inner">
-    <div class="player-header">
-      <span id="player-title"></span>
-      <button id="player-close-btn">&times;</button>
-    </div>
-    <video id="video-el" controls autoplay></video>
-    <p id="player-error" class="error-msg" hidden></p>
+  <!-- Series detail -->
+  <div id="series-view" class="series-view view" hidden>
+    <div id="series-body"></div>
   </div>
-</div>
 
-<div id="toast" class="toast" hidden></div>
+  <!-- Movie / episode watch view -->
+  <div id="watch-view" class="watch-view view" hidden>
+    <div class="watch-col">
+      <div class="video-wrap">
+        <video id="watch-video" controls autoplay></video>
+      </div>
+      <div class="watch-info">
+        <div class="watch-heading">
+          <div>
+            <div id="watch-eyebrow" class="eyebrow"></div>
+            <h1 id="watch-title"></h1>
+            <div id="watch-meta" class="meta-line"></div>
+          </div>
+        </div>
+        <div id="watch-actions" class="action-row"></div>
+        <p id="watch-plot" class="plot"></p>
+        <p id="watch-error" class="error-msg" hidden></p>
+      </div>
+      <section id="watch-episodes" class="watch-episodes" hidden>
+        <div class="episodes-header">
+          <h3 class="section-title">Episodes</h3>
+          <div id="watch-seasons" class="pill-row"></div>
+        </div>
+        <div id="watch-episode-row" class="shelf-row"></div>
+      </section>
+    </div>
+  </div>
+</section>
+
+<div id="toast" class="toast" hidden><span id="toast-msg"></span><button id="toast-action" hidden></button></div>
 
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
 <script src="app.js"></script>
