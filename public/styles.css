@@ -245,7 +245,9 @@ input::placeholder { color: var(--text-faint); }
   flex-shrink: 0;
 }
 .live-btn:hover { background: var(--border); color: var(--text); }
-.live-btn .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--danger); display: inline-block; }
+.live-btn .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); display: inline-block; }
+.live-btn.at-live { color: var(--text); font-weight: 600; letter-spacing: 0.04em; }
+.live-btn.at-live .live-dot { background: var(--danger); }
 
 .theater-epg { color: var(--text-dim); font-size: 13px; line-height: 1.6; margin-top: 10px; }
 .theater-epg .epg-now { color: var(--text); }

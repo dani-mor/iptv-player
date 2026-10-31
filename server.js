@@ -1,6 +1,6 @@
 const express = require('express');
 const path = require('path');
-const { Readable } = require('stream');
+const { Readable, pipeline } = require('stream');
 
 const app = express();
 const PORT = process.env.PORT || 4040;
@@ -89,10 +89,13 @@ app.get('/api/login', async (req, res) => {
   }
 });
 
+const proxiedMediaUrl = (absoluteUrl, ua) => `/proxy/media?url=${encodeURIComponent(absoluteUrl)}&ua=${encodeURIComponent(ua)}`;
+const isPlaylistUrl = (url) => /\.m3u8(\?|$)/i.test(url);
+
 // Rewrites an HLS playlist so every segment / variant / key URI is routed back through our proxy,
 // since the browser cannot attach the provider's required User-Agent header itself.
 function rewritePlaylist(text, baseUrl, ua) {
-  const proxied = (absoluteUrl) => `/proxy/media?url=${encodeURIComponent(absoluteUrl)}&ua=${encodeURIComponent(ua)}`;
+  const proxied = (absoluteUrl) => proxiedMediaUrl(absoluteUrl, ua);
 
   const lines = text.split(/\r?\n/).map((line) => {
     if (line.startsWith('#')) {
@@ -117,23 +120,52 @@ function rewritePlaylist(text, baseUrl, ua) {
   return lines.join('\n');
 }
 
-async function handleMediaProxy(req, res, targetUrl, ua) {
-  const { signal, cancel } = withTimeout(REQUEST_TIMEOUT_MS);
+async function fetchUpstream(url, options) {
   try {
-    const headers = { 'User-Agent': ua || DEFAULT_UA };
+    return await fetch(url, options);
+  } catch (e) {
+    if (options.signal.aborted) throw e;
+    return fetch(url, options);
+  }
+}
+
+async function handleMediaProxy(req, res, targetUrl, ua) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  // Release the provider connection as soon as the player stops listening
+  // (channel switch, hls.js cancelling a load) instead of leaking it.
+  res.on('close', () => controller.abort());
+
+  try {
+    const headers = { 'User-Agent': ua };
     if (req.headers.range) headers['Range'] = req.headers.range;
 
-    const upstream = await fetch(targetUrl, { headers, redirect: 'follow', signal });
-    const contentType = upstream.headers.get('content-type') || '';
-    const looksLikePlaylist = contentType.includes('mpegurl') || /\.m3u8(\?|$)/i.test(targetUrl);
+    // Xtream live playlists 302 to a load-balanced edge, and each edge numbers segments
+    // differently. Playlist redirects go to the browser so hls.js keeps reloading the edge
+    // it started on; following them here would land each reload on a random edge and
+    // break the live timeline.
+    const upstream = await fetchUpstream(targetUrl, {
+      headers,
+      redirect: isPlaylistUrl(targetUrl) ? 'manual' : 'follow',
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
 
-    if (looksLikePlaylist) {
+    const location = upstream.headers.get('location');
+    if (upstream.status >= 300 && upstream.status < 400 && location) {
+      upstream.body?.cancel().catch(() => {});
+      res.set('Cache-Control', 'no-store');
+      res.redirect(302, proxiedMediaUrl(new URL(location, targetUrl).toString(), ua));
+      return;
+    }
+
+    const contentType = upstream.headers.get('content-type') || '';
+    if (upstream.ok && (contentType.includes('mpegurl') || isPlaylistUrl(targetUrl))) {
       const text = await upstream.text();
-      const rewritten = rewritePlaylist(text, upstream.url || targetUrl, ua);
       res.status(upstream.status);
       res.set('Content-Type', 'application/vnd.apple.mpegurl');
-      res.set('Cache-Control', 'no-cache');
-      res.send(rewritten);
+      res.set('Cache-Control', 'no-store');
+      res.send(rewritePlaylist(text, targetUrl, ua));
       return;
     }
 
@@ -146,16 +178,17 @@ async function handleMediaProxy(req, res, targetUrl, ua) {
       res.end();
       return;
     }
-    Readable.fromWeb(upstream.body).pipe(res);
+    // pipeline (unlike .pipe) tears down both sides on error or client disconnect;
+    // with .pipe an upstream reset is an unhandled stream error that kills the process.
+    pipeline(Readable.fromWeb(upstream.body), res, () => {});
   } catch (e) {
-    if (!res.headersSent) {
-      const timedOut = e.name === 'AbortError';
-      res.status(timedOut ? 504 : 502).json({ error: timedOut ? 'Media request timed out' : 'Could not reach media source', detail: e.message });
-    } else {
-      res.end();
+    clearTimeout(timer);
+    if (res.headersSent || res.destroyed) {
+      res.destroy();
+      return;
     }
-  } finally {
-    cancel();
+    const timedOut = e.name === 'AbortError';
+    res.status(timedOut ? 504 : 502).json({ error: timedOut ? 'Media request timed out' : 'Could not reach media source', detail: e.message });
   }
 }
 

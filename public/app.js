@@ -40,6 +40,7 @@
     theaterSearch: $('#theater-search'),
     theaterChannelList: $('#theater-channel-list'),
     theaterLiveBtn: $('#theater-live-btn'),
+    theaterLiveLabel: $('#theater-live-btn .live-label'),
     theaterMuteBtn: $('#theater-mute-btn'),
     theaterVolume: $('#theater-volume'),
 
@@ -66,6 +67,24 @@
   let theaterHls = null;
   let theaterRailItems = [];
   let theaterActiveId = null;
+  let liveSession = null; // { item, restarts, mediaRecoveries, restartTimer, stopped, lastTime, lastProgressAt }
+  let liveWatchdog = null;
+
+  const LIVE_HLS_CONFIG = {
+    // The default (Infinity) keeps every played segment in the media buffer; over a
+    // long match that hits the browser's buffer quota and stalls playback.
+    backBufferLength: 30,
+    manifestLoadingMaxRetry: 6,
+    manifestLoadingRetryDelay: 1000,
+    levelLoadingMaxRetry: 6,
+    levelLoadingRetryDelay: 1000,
+    fragLoadingMaxRetry: 8,
+    fragLoadingRetryDelay: 1000,
+  };
+  const LIVE_STALL_RESTART_MS = 12000;
+  const MAX_LIVE_RESTARTS = 6;
+  const LIVE_TOLERANCE_S = 8;
+  const UNPLAYABLE_ERRORS = ['manifestIncompatibleCodecsError', 'bufferIncompatibleCodecsError', 'bufferAddCodecError'];
 
   function showScreen(name) {
     el.loginScreen.hidden = name !== 'login';
@@ -542,14 +561,15 @@
     setTheaterMode(true);
     renderChannelRail(theaterRailItems);
     playTheaterChannel(item);
+    if (!liveWatchdog) liveWatchdog = setInterval(checkLiveProgress, 1000);
   }
 
   function closeTheater() {
     if (el.theaterView.hidden) return;
-    if (theaterHls) { theaterHls.destroy(); theaterHls = null; }
-    el.theaterVideo.pause();
-    el.theaterVideo.removeAttribute('src');
-    el.theaterVideo.load();
+    stopLiveStream();
+    liveSession = null;
+    clearInterval(liveWatchdog);
+    liveWatchdog = null;
     setTheaterMode(false);
   }
 
@@ -583,17 +603,38 @@
     updateMuteIcon();
   });
 
-  el.theaterLiveBtn.addEventListener('click', () => {
+  function liveSyncTarget() {
     const v = el.theaterVideo;
-    if (theaterHls && isFinite(theaterHls.liveSyncPosition)) {
-      v.currentTime = theaterHls.liveSyncPosition;
-    } else if (v.seekable && v.seekable.length) {
-      v.currentTime = v.seekable.end(v.seekable.length - 1);
-    } else if (isFinite(v.duration)) {
-      v.currentTime = v.duration;
+    if (theaterHls) return Number.isFinite(theaterHls.liveSyncPosition) ? theaterHls.liveSyncPosition : null;
+    return v.seekable.length ? v.seekable.end(v.seekable.length - 1) : null;
+  }
+
+  function updateLiveButton() {
+    const v = el.theaterVideo;
+    const target = liveSyncTarget();
+    const atLive = !!liveSession && !liveSession.stopped && !v.paused && (target === null || target - v.currentTime < LIVE_TOLERANCE_S);
+    el.theaterLiveBtn.classList.toggle('at-live', atLive);
+    const label = atLive ? 'LIVE' : 'Go live';
+    if (el.theaterLiveLabel.textContent !== label) el.theaterLiveLabel.textContent = label;
+    el.theaterLiveBtn.title = atLive ? 'Watching live' : 'Jump to live';
+  }
+
+  el.theaterLiveBtn.addEventListener('click', () => {
+    const s = liveSession;
+    if (!s) return;
+    const v = el.theaterVideo;
+    const stuck = !v.paused && v.readyState < v.HAVE_FUTURE_DATA && Date.now() - s.lastProgressAt > 3000;
+    if (s.stopped || stuck) {
+      restartLiveNow();
+      return;
     }
+    const target = liveSyncTarget();
+    if (target !== null) v.currentTime = target;
     v.play().catch(() => {});
+    updateLiveButton();
   });
+
+  ['play', 'pause', 'seeked'].forEach((evt) => el.theaterVideo.addEventListener(evt, updateLiveButton));
 
   function renderChannelRail(items) {
     el.theaterChannelList.innerHTML = '';
@@ -636,30 +677,139 @@
     });
   }
 
+  function rangesOverlap(a, b) {
+    for (let i = 0; i < a.length; i++) {
+      for (let j = 0; j < b.length; j++) {
+        if (a.start(i) < b.end(j) && b.start(j) < a.end(i)) return true;
+      }
+    }
+    return false;
+  }
+
+  // Each (re)start resolves the channel URL again, which lands on a fresh provider edge.
+  // That is the right move after a fatal error or a real stall (dead edge, expired token),
+  // but never during normal playback, where hls.js must keep reloading the edge it is on.
+  function startLiveStream() {
+    const s = liveSession;
+    const v = el.theaterVideo;
+    if (theaterHls) { theaterHls.destroy(); theaterHls = null; }
+    s.stopped = false;
+    s.lastTime = v.currentTime;
+    s.lastProgressAt = Date.now();
+
+    const src = `/stream?${qs({ ...creds, type: 'live', id: s.item.stream_id, ext: 'm3u8' })}`;
+    if (!(window.Hls && window.Hls.isSupported())) {
+      v.src = src;
+      v.play().catch(() => {});
+      return;
+    }
+
+    const hls = new window.Hls(LIVE_HLS_CONFIG);
+    theaterHls = hls;
+    hls.on(window.Hls.Events.MANIFEST_PARSED, () => v.play().catch(() => {}));
+    hls.on(window.Hls.Events.FRAG_BUFFERED, () => {
+      s.restarts = 0;
+      s.mediaRecoveries = 0;
+    });
+    // Some provider feeds carry audio and video timestamps minutes apart (same on every
+    // edge). The browser only plays where both tracks overlap, so it would wait forever.
+    hls.on(window.Hls.Events.BUFFER_APPENDED, (_evt, data) => {
+      const { audio, video } = data.timeRanges || {};
+      if (hls !== theaterHls || !audio || !video || !audio.length || !video.length) return;
+      if (!rangesOverlap(audio, video) && Math.abs(audio.start(0) - video.start(0)) > 10) {
+        setTimeout(() => {
+          if (hls !== theaterHls) return;
+          toast("This channel's audio and video are out of sync at the provider, so it can't play. Try another version of it.");
+          stopLiveStream();
+          updateLiveButton();
+        }, 0);
+      }
+    });
+    hls.on(window.Hls.Events.ERROR, (_evt, data) => {
+      if (!data.fatal || hls !== theaterHls) return;
+      if (UNPLAYABLE_ERRORS.includes(data.details)) {
+        toast("This channel's video format isn't supported by your browser");
+        stopLiveStream();
+        return;
+      }
+      if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR && s.mediaRecoveries < 2) {
+        s.mediaRecoveries += 1;
+        hls.recoverMediaError();
+        return;
+      }
+      scheduleLiveRestart(data.details);
+    });
+    hls.loadSource(src);
+    hls.attachMedia(v);
+  }
+
+  function stopLiveStream() {
+    if (liveSession) {
+      clearTimeout(liveSession.restartTimer);
+      liveSession.restartTimer = null;
+      liveSession.stopped = true;
+    }
+    if (theaterHls) { theaterHls.destroy(); theaterHls = null; }
+    const v = el.theaterVideo;
+    v.pause();
+    v.removeAttribute('src');
+    v.load();
+  }
+
+  function scheduleLiveRestart(reason) {
+    const s = liveSession;
+    if (!s || s.restartTimer) return;
+    if (s.restarts >= MAX_LIVE_RESTARTS) {
+      toast(`Lost connection to ${s.item.name || 'channel'} (${reason}). Press Go live to retry.`);
+      stopLiveStream();
+      updateLiveButton();
+      return;
+    }
+    const delay = Math.min(500 * 2 ** s.restarts, 8000);
+    s.restarts += 1;
+    s.restartTimer = setTimeout(() => {
+      s.restartTimer = null;
+      if (liveSession === s) startLiveStream();
+    }, delay);
+  }
+
+  function restartLiveNow() {
+    const s = liveSession;
+    clearTimeout(s.restartTimer);
+    s.restartTimer = null;
+    s.restarts = 0;
+    startLiveStream();
+    updateLiveButton();
+  }
+
+  // hls.js recovers from most hiccups itself, but if the edge stops producing segments
+  // it just keeps waiting. Restart on a fresh edge when playback is frozen while not paused.
+  function checkLiveProgress() {
+    const s = liveSession;
+    if (!s) return;
+    const v = el.theaterVideo;
+    const now = Date.now();
+    if (s.stopped || s.restartTimer || v.paused || v.seeking || v.currentTime !== s.lastTime) {
+      s.lastTime = v.currentTime;
+      s.lastProgressAt = now;
+    } else if (now - s.lastProgressAt > LIVE_STALL_RESTART_MS) {
+      s.lastProgressAt = now;
+      scheduleLiveRestart('stalled');
+    }
+    updateLiveButton();
+  }
+
   function playTheaterChannel(item) {
     theaterActiveId = item.stream_id;
     highlightActiveRow();
     el.theaterChannelName.textContent = item.name || '';
     el.theaterEpg.innerHTML = '';
 
-    if (theaterHls) { theaterHls.destroy(); theaterHls = null; }
-    el.theaterVideo.pause();
-    el.theaterVideo.removeAttribute('src');
-    el.theaterVideo.load();
-
-    const src = `/stream?${qs({ ...creds, type: 'live', id: item.stream_id, ext: 'm3u8' })}`;
-    if (window.Hls && window.Hls.isSupported()) {
-      theaterHls = new window.Hls();
-      theaterHls.loadSource(src);
-      theaterHls.attachMedia(el.theaterVideo);
-      theaterHls.on(window.Hls.Events.ERROR, (_evt, data) => {
-        if (data.fatal) toast(`Playback error: ${data.details}`);
-      });
-    } else {
-      el.theaterVideo.src = src;
-    }
-    el.theaterVideo.play().catch(() => {});
+    stopLiveStream();
+    liveSession = { item, restarts: 0, mediaRecoveries: 0, restartTimer: null, stopped: false, lastTime: 0, lastProgressAt: Date.now() };
+    startLiveStream();
     updateMuteIcon();
+    updateLiveButton();
 
     loadEpg(item.stream_id);
   }
