@@ -10,17 +10,17 @@
 </head>
 <body>
 
-<!-- Login screen -->
-<section id="login-screen" class="screen">
+<!-- Login screen (main.js shows it only when there are no saved credentials) -->
+<section id="login-screen" class="screen" hidden>
   <form id="login-form" class="login-card">
     <img class="login-icon" src="icon.svg" alt="" />
     <h1>IPTV Player</h1>
     <p class="subtitle">Sign in with your Xtream Codes provider</p>
 
     <div class="field-group">
-      <input id="in-server" type="text" placeholder="Server address" required autocomplete="off" />
-      <input id="in-username" type="text" placeholder="Username" required autocomplete="off" />
-      <input id="in-password" type="password" placeholder="Password" required autocomplete="off" />
+      <input id="in-server" type="text" placeholder="Server address" required autocomplete="off" aria-label="Server address" />
+      <input id="in-username" type="text" placeholder="Username" required autocomplete="off" aria-label="Username" />
+      <input id="in-password" type="password" placeholder="Password" required autocomplete="off" aria-label="Password" />
     </div>
 
     <details id="advanced-details">
@@ -36,7 +36,7 @@
     </details>
 
     <button type="submit" id="login-btn" class="btn-primary">Connect</button>
-    <p id="login-error" class="error-msg" hidden></p>
+    <p id="login-error" class="error-msg" role="alert" hidden></p>
   </form>
 </section>
 
@@ -45,7 +45,7 @@
   <header class="topbar">
     <div class="topbar-left">
       <button id="back-btn" class="back-btn" hidden>
-        <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg><span id="back-label">Back</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span id="back-label">Back</span>
       </button>
       <div id="brand" class="brand">IPTV</div>
     </div>
@@ -56,19 +56,26 @@
     </nav>
     <div class="topbar-right">
       <label id="search-wrap" class="search-wrap">
-        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
-        <input id="search-box" type="search" placeholder="Search" />
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+        <input id="search-box" type="search" placeholder="Search" aria-label="Search" />
+        <kbd class="search-key">/</kbd>
       </label>
       <span id="account-info" class="account-info"></span>
-      <button id="logout-btn" class="icon-btn subtle" title="Log out">
-        <svg viewBox="0 0 24 24"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 16l-4-4 4-4M6 12h10"/></svg>
+      <button id="logout-btn" class="icon-btn subtle" title="Log out" aria-label="Log out">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 16l-4-4 4-4M6 12h10"/></svg>
       </button>
     </div>
   </header>
 
   <!-- Browse -->
   <div id="browse-view" class="main-layout view">
-    <aside id="category-list" class="category-list"></aside>
+    <aside id="category-list" class="category-list">
+      <label class="search-wrap wide cat-filter">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+        <input id="cat-filter" type="search" placeholder="Filter categories" aria-label="Filter categories" />
+      </label>
+      <div id="category-items"></div>
+    </aside>
     <main id="content-area" class="content-area">
       <section id="shelf" class="shelf" hidden>
         <h3 id="shelf-title" class="section-title"></h3>
@@ -89,34 +96,45 @@
   <!-- Live TV theater view: big player + program info + channel rail -->
   <div id="theater-view" class="theater-view view" hidden>
     <div class="theater-player-col">
-      <div class="video-wrap">
+      <div id="theater-video-wrap" class="video-wrap">
         <video id="theater-video" controls autoplay></video>
+        <div id="theater-osd" class="osd" aria-live="polite"></div>
       </div>
       <div class="theater-info">
         <div class="theater-info-top">
-          <h2 id="theater-channel-name"></h2>
+          <h2 id="theater-channel-name" class="channel-heading"></h2>
           <div class="theater-controls">
+            <button id="theater-last-btn" class="icon-btn" hidden aria-label="Previous channel"></button>
             <button id="theater-live-btn" class="live-btn" title="Jump to live"><span class="live-dot"></span><span class="live-label">Go live</span></button>
+            <button id="theater-multi-btn" class="icon-btn" title="Multiview: watch several channels at once" aria-label="Multiview"></button>
+            <button id="theater-pip-btn" class="icon-btn" title="Picture in picture" aria-label="Picture in picture"></button>
             <button id="theater-fav-btn" class="icon-btn" title="Add to favourites"></button>
             <button id="theater-mute-btn" class="icon-btn" title="Mute"></button>
-            <input id="theater-volume" class="volume-slider" type="range" min="0" max="1" step="0.05" value="1" title="Volume" />
+            <input id="theater-volume" class="volume-slider" type="range" min="0" max="1" step="0.05" value="1" title="Volume" aria-label="Volume" />
           </div>
         </div>
+        <div id="theater-versions" class="versions-row" hidden></div>
         <div id="theater-epg" class="theater-epg"></div>
         <section id="theater-schedule" class="schedule" hidden></section>
       </div>
     </div>
     <aside class="theater-channel-rail">
       <label class="search-wrap wide">
-        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
-        <input id="theater-search" type="search" placeholder="Filter channels" />
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+        <input id="theater-search" type="search" placeholder="Filter channels" aria-label="Filter channels" />
       </label>
-      <div id="theater-channel-list" class="theater-channel-list"></div>
+      <div id="theater-channel-list" class="channel-list"></div>
+      <div class="rail-hint"><kbd>↑</kbd><kbd>↓</kbd> change channel · <kbd>⌫</kbd> previous</div>
     </aside>
   </div>
 
+  <!-- Movie detail -->
+  <div id="movie-view" class="detail-view view" hidden>
+    <div id="movie-body"></div>
+  </div>
+
   <!-- Series detail -->
-  <div id="series-view" class="series-view view" hidden>
+  <div id="series-view" class="detail-view view" hidden>
     <div id="series-body"></div>
   </div>
 
@@ -147,11 +165,40 @@
       </section>
     </div>
   </div>
+
+  <!-- Multiview: several live channels at once -->
+  <div id="multiview-view" class="multiview-view view" hidden>
+    <div id="mv-grid" class="mv-grid"></div>
+  </div>
+
+  <!-- Live channel keeps playing here while browsing -->
+  <div id="mini-player" class="mini-player" hidden>
+    <div id="mini-slot" class="mini-slot"></div>
+    <div class="mini-bar">
+      <span id="mini-name" class="mini-name channel-heading"></span>
+      <button id="mini-expand" class="icon-btn subtle" title="Back to full size" aria-label="Back to full size"></button>
+      <button id="mini-close" class="icon-btn subtle" title="Stop" aria-label="Stop"></button>
+    </div>
+  </div>
+
+  <!-- Channel picker (multiview) -->
+  <div id="picker" class="picker" hidden>
+    <div class="picker-card" role="dialog" aria-label="Add a channel">
+      <div class="picker-head">
+        <label class="search-wrap wide">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+          <input id="picker-search" type="search" placeholder="Find a channel" aria-label="Find a channel" />
+        </label>
+        <button id="picker-close" class="icon-btn subtle" aria-label="Close"></button>
+      </div>
+      <div id="picker-list" class="channel-list picker-list"></div>
+    </div>
+  </div>
 </section>
 
-<div id="toast" class="toast" hidden><span id="toast-msg"></span><button id="toast-action" hidden></button></div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden><span id="toast-msg"></span><button id="toast-action" hidden></button></div>
 
-<script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
-<script src="app.js"></script>
+<script src="/vendor/hls.min.js"></script>
+<script type="module" src="js/main.js"></script>
 </body>
 </html>
