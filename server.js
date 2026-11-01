@@ -4,6 +4,7 @@ const path = require('path');
 const { Readable, pipeline } = require('stream');
 const { proxiedMediaUrl, isPlaylistUrl, rewritePlaylist } = require('./lib/playlist');
 const { movieTailRange, knownTail, startTail, sendTail, tailPrefetcher } = require('./lib/tail');
+const { fetchViaEdge } = require('./lib/edges');
 const { normTitle, cleanShowName, pickShow } = require('./lib/titles');
 const { indexKey, searchGuide, programmesBetween, createGuideStore } = require('./lib/guide-index');
 const sports = require('./lib/sports');
@@ -124,31 +125,6 @@ async function fetchUpstream(url, options) {
   }
 }
 
-// Movie and episode files 302 to a VOD edge, and starting or seeking one makes several
-// range requests in a row. Going straight to the edge we were sent to last time saves that
-// hop on each; if the edge stops answering (its link may expire), ask the original URL again.
-const EDGE_TTL_MS = 5 * 60 * 1000;
-const fileEdges = new Map(); // file URL -> { url, at }
-
-async function fetchViaEdge(targetUrl, options) {
-  const edge = fileEdges.get(targetUrl);
-  if (edge && Date.now() - edge.at < EDGE_TTL_MS) {
-    const r = await fetch(edge.url, options).catch((e) => {
-      if (options.signal.aborted) throw e;
-      return null;
-    });
-    if (r && r.ok) return r;
-    r?.body?.cancel().catch(() => {});
-  }
-  fileEdges.delete(targetUrl);
-  const r = await fetchUpstream(targetUrl, options);
-  if (r.ok && r.redirected) {
-    for (const [k, v] of fileEdges) if (Date.now() - v.at >= EDGE_TTL_MS) fileEdges.delete(k);
-    fileEdges.set(targetUrl, { url: r.url, at: Date.now() });
-  }
-  return r;
-}
-
 async function handleMediaProxy(req, res, targetUrl, ua, { rememberEdge = false } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -172,7 +148,8 @@ async function handleMediaProxy(req, res, targetUrl, ua, { rememberEdge = false 
     // differently. Playlist redirects go to the browser so hls.js keeps reloading the edge
     // it started on; following them here would land each reload on a random edge and
     // break the live timeline.
-    const upstream = await (rememberEdge ? fetchViaEdge : fetchUpstream)(targetUrl, {
+    const fetchFile = rememberEdge ? (url, options) => fetchViaEdge(url, options, fetchUpstream) : fetchUpstream;
+    const upstream = await fetchFile(targetUrl, {
       headers,
       redirect: isPlaylistUrl(targetUrl) ? 'manual' : 'follow',
       signal: controller.signal,
