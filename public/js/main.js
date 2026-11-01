@@ -1,19 +1,23 @@
 // Entry point: login / auto-login, logout, keyboard shortcuts and periodic refresh.
 
 import { $, store, toast } from './util.js';
-import { session, doLogin, clearListCache } from './api.js';
-import { nav, setView, registerView, onViewChange, initNavigation } from './views.js';
-import { loadLibrary, onLibraryChange } from './library.js';
+import { session, doLogin, clearListCache, apiServer } from './api.js';
+import { nav, setView, registerView, onViewChange, initNavigation, isTopLevel } from './views.js';
+import { library, loadLibrary, onLibraryChange } from './library.js';
 import { resetCatalog } from './catalog.js';
 import { resetEpg, tickEpg } from './epg.js';
 import { refreshFavButtons } from './channels.js';
 import { initGuide } from './guide.js';
-import { initBrowse, switchTab, lastTab, refreshBrowse, tickBrowse, focusSearch } from './browse.js';
+import { initBrowse, lastTab, refreshBrowse, tickBrowse, focusSearch, resetBrowse } from './browse.js';
 import { initTheater, closeTheater, theaterVideo, zap, lastChannel, toggleMute, tickTheater, refreshTheaterFav, focusTheaterSearch } from './theater.js';
 import { initSeries, resetSeries } from './series.js';
 import { initMovies, resetMovies } from './movie.js';
 import { initWatch, watchVideo, seekBy, toggleFullscreen } from './watch.js';
 import { initMultiview, pickerOpen, closePicker, setAudioIndex } from './multiview.js';
+import { initHome, refreshHome, tickHome } from './home.js';
+import { resetSports } from './sports.js';
+import { initFinder } from './finder.js';
+import { checkReminders } from './reminders.js';
 
 const CREDS_KEY = 'iptv_player_creds';
 const DEFAULT_UA = 'IPTVSmartersPlayer';
@@ -53,26 +57,40 @@ function setUserInfo(userInfo) {
   if (userInfo) store.set(userInfoKey(), userInfo);
 }
 
+// Lets the server (re)build its index of the sports guide early, so the match finder and
+// the Sport Center have it by the time they're used.
+function warmGuide() {
+  apiServer('/api/guide/status', { ids: library.favs.map((f) => f.stream_id).join(',') }).catch(() => {});
+}
+
+// The app always opens on Home; the catalogue tabs remember the last one used.
+function goHome() {
+  history.replaceState({ view: 'home' }, '');
+  setView('home');
+}
+
 function enterApp(userInfo) {
   loadLibrary();
+  warmGuide();
   setUserInfo(userInfo);
   showScreen('app');
-  history.replaceState({ view: 'browse' }, '');
-  setView('browse');
-  switchTab(lastTab());
+  nav.type = lastTab();
+  goHome();
+  setTimeout(checkReminders, 3000); // reminders that came due while the app was closed
 }
 
 // Leaves the app and forgets everything loaded for this account.
 function leaveApp() {
   closeTheater();
-  history.replaceState({ view: 'browse' }, '');
-  setView('browse');
+  goHome();
   session.creds = null;
   session.userInfo = null;
   resetCatalog();
   resetEpg();
   resetSeries();
   resetMovies();
+  resetBrowse();
+  resetSports();
   showScreen('login');
 }
 
@@ -166,14 +184,14 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closePicker();
     return;
   }
-  if (e.key === 'Escape' && nav.view !== 'browse' && !document.fullscreenElement) {
+  if (e.key === 'Escape' && !isTopLevel(nav.view) && !document.fullscreenElement) {
     history.back();
     return;
   }
   if (e.key === '/') {
     e.preventDefault();
     if (nav.view === 'theater') focusTheaterSearch();
-    else if (nav.view === 'browse') focusSearch();
+    else if (isTopLevel(nav.view)) focusSearch();
     return;
   }
 
@@ -203,6 +221,8 @@ document.addEventListener('keydown', (e) => {
 
 registerView('browse', $('#browse-view'));
 initNavigation(() => !!session.creds);
+initHome();
+initFinder();
 initBrowse();
 initGuide();
 initTheater();
@@ -211,18 +231,36 @@ initMovies();
 initWatch();
 initMultiview();
 
-onViewChange((prev, next) => { if (next === 'browse') refreshBrowse(); });
+// Home and the catalogue tabs share the tab bar: Home lights up only on Home.
+function markTabs(view) {
+  $('#home-tab').classList.toggle('active', view === 'home');
+  document.querySelectorAll('#tabs .tab-btn[data-type]').forEach((b) => {
+    b.classList.toggle('active', view !== 'home' && b.dataset.type === nav.type);
+  });
+}
+
+onViewChange((prev, next) => {
+  if (isTopLevel(next)) markTabs(next);
+  if (next === 'browse') refreshBrowse();
+});
+$('#home-tab').addEventListener('click', () => { if (nav.view !== 'home') goHome(); });
 onLibraryChange(() => {
   refreshFavButtons();
   refreshTheaterFav();
   if (nav.view === 'browse') refreshBrowse();
+  if (nav.view === 'home') refreshHome();
+});
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && !el.appScreen.hidden && session.creds) checkReminders();
 });
 
 setInterval(() => {
   if (el.appScreen.hidden || document.hidden) return;
   tickEpg();
   tickTheater();
+  checkReminders();
   if (nav.view === 'browse') tickBrowse();
+  if (nav.view === 'home') tickHome();
 }, 30000);
 
 tryAutoLogin();

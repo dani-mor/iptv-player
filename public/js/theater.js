@@ -3,7 +3,7 @@
 
 import { $, icon, escapeHtml, fmtTime, fmtDuration, debounce, toast } from './util.js';
 import { fold, matchesQuery, parseChannelName, versionLabels } from './names.js';
-import { pushView, registerView, onViewChange, nav, TAB_LABELS } from './views.js';
+import { pushView, registerView, onViewChange, nav, TAB_LABELS, backTo, isTopLevel } from './views.js';
 import { isFav, toggleFav, addRecent, bindVolume } from './library.js';
 import { livePool, versionsOf, loadAll } from './catalog.js';
 import { loadEpg, epgListings, nowProgram, progressPct } from './epg.js';
@@ -56,7 +56,7 @@ export const liveItem = () => player.item;
 export function openTheater(item, items) {
   railItems = items && items.length ? items : livePool();
   el.search.value = '';
-  pushView('theater', TAB_LABELS.live);
+  pushView('theater', backTo(TAB_LABELS.live));
   renderRail(railItems);
   playChannel(item);
   // The full channel list lets us find other versions of a channel in any category.
@@ -354,7 +354,7 @@ export function initTheater() {
   onViewChange((prev, next) => {
     if (!player.item) return;
     if (next === 'theater') { exitMini(); return; }
-    const browsing = next === 'browse' || next === 'series' || next === 'movie';
+    const browsing = isTopLevel(next) || next === 'series' || next === 'movie';
     if (browsing && mini) return;
     if (browsing && prev === 'theater' && !player.stopped) { enterMini(); return; }
     closeTheater();
@@ -396,6 +396,6 @@ export function initTheater() {
 
   el.miniExpand.innerHTML = icon('expand');
   el.miniClose.innerHTML = icon('close');
-  el.miniExpand.addEventListener('click', () => pushView('theater', TAB_LABELS.live));
+  el.miniExpand.addEventListener('click', () => pushView('theater', backTo(TAB_LABELS.live)));
   el.miniClose.addEventListener('click', closeTheater);
 }

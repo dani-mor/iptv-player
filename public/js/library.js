@@ -1,11 +1,12 @@
 // The user's library, per account, in localStorage: favourite channels, recently
-// watched channels, continue-watching progress, watched episodes, hidden categories.
+// watched channels, continue-watching progress, watched episodes, hidden categories,
+// match reminders and the Sport Center settings.
 
 import { store } from './util.js';
 import { session, accountKey } from './api.js';
 
 const MAX_RECENTS = 24;
-const blank = () => ({ favs: [], recents: [], progress: {}, episodes: {}, hiddenCats: {} });
+const blank = () => ({ favs: [], recents: [], progress: {}, episodes: {}, hiddenCats: {}, reminders: [], sports: null });
 
 // Mutated in place so every module's import always sees the current library.
 export const library = blank();
@@ -69,6 +70,54 @@ export function continueEntries(kind) {
 
 export function removeContinue(key) {
   delete library.progress[key];
+  saveLibrary();
+  emit();
+}
+
+// ---------- Reminders ----------
+// { id, title, sub, start, streams: [channel refs, best first], source: "fixture" | "programme",
+//   shown: "" | "soon" | "start", acted }
+
+const REMINDER_KEEP_MS = 3 * 3600e3;
+
+export const hasReminder = (id) => library.reminders.some((r) => r.id === id);
+
+export function toggleReminder(r) {
+  if (hasReminder(r.id)) {
+    library.reminders = library.reminders.filter((x) => x.id !== r.id);
+  } else {
+    library.reminders = [...library.reminders, { ...r, streams: (r.streams || []).slice(0, 6).map(channelRef), shown: '', acted: false }];
+  }
+  saveLibrary();
+  emit();
+  return hasReminder(r.id);
+}
+
+export function updateReminder(id, changes) {
+  const r = library.reminders.find((x) => x.id === id);
+  if (!r) return;
+  Object.assign(r, changes);
+  saveLibrary();
+}
+
+// Drops reminders for things that started more than 3 hours ago.
+export function pruneReminders(now = Date.now()) {
+  const kept = library.reminders.filter((r) => now - r.start < REMINDER_KEEP_MS);
+  if (kept.length === library.reminders.length) return;
+  library.reminders = kept;
+  saveLibrary();
+  emit();
+}
+
+// ---------- Sport Center settings ----------
+
+export const DEFAULT_TEAMS = ['Real Madrid', 'Spain'];
+
+// leagues: null = every competition the server offers.
+export const sportsSettings = () => ({ teams: DEFAULT_TEAMS, leagues: null, spanishAthletes: true, ...(library.sports || {}) });
+
+export function setSportsSettings(changes) {
+  library.sports = { ...sportsSettings(), ...changes };
   saveLibrary();
   emit();
 }

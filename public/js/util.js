@@ -28,6 +28,7 @@ const ICON_PATHS = {
   multiview: '<rect x="3" y="4.5" width="8" height="6.5" rx="1.5"/><rect x="13" y="4.5" width="8" height="6.5" rx="1.5"/><rect x="3" y="13" width="8" height="6.5" rx="1.5"/><rect x="13" y="13" width="8" height="6.5" rx="1.5"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   chevronDown: '<path d="M6 9.5l6 6 6-6"/>',
+  bell: '<path d="M6 16v-5a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
 };
 export const icon = (name, filled = false) => `<svg viewBox="0 0 24 24" aria-hidden="true"${filled ? ' class="filled"' : ''}>${ICON_PATHS[name]}</svg>`;
 

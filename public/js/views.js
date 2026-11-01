@@ -4,8 +4,15 @@
 import { $ } from './util.js';
 
 export const TAB_LABELS = { live: 'Live TV', vod: 'Movies', series: 'TV Shows' };
+export const HOME_LABEL = 'Home';
 
-export const nav = { view: 'browse', type: 'live' };
+export const nav = { view: 'home', type: 'live' };
+
+// Top-level pages, with the tabs and search in the top bar.
+export const isTopLevel = (name) => name === 'home' || name === 'browse';
+
+// "Back" label for a page opened from here: Home, or the catalogue tab (`tabLabel`).
+export const backTo = (tabLabel) => (nav.view === 'home' ? HOME_LABEL : tabLabel);
 
 const views = {}; // name -> { node, available() }
 const listeners = [];
@@ -22,7 +29,7 @@ export function setView(name, backLabel) {
   nav.view = name;
   Object.entries(views).forEach(([n, v]) => { v.node.hidden = n !== name; });
 
-  const browsing = name === 'browse';
+  const browsing = isTopLevel(name);
   $('#back-btn').hidden = browsing;
   $('#brand').hidden = !browsing;
   $('#tabs').style.visibility = browsing ? '' : 'hidden';
@@ -41,8 +48,8 @@ export function initNavigation(isLoggedIn) {
   window.addEventListener('popstate', (e) => {
     if (!isLoggedIn()) return;
     const state = e.state || {};
-    let name = state.view || 'browse';
-    if (!views[name] || !views[name].available()) name = 'browse';
+    let name = state.view || 'home';
+    if (!views[name] || !views[name].available()) name = 'home';
     setView(name, state.back);
   });
   $('#back-btn').addEventListener('click', () => history.back());

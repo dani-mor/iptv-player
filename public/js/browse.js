@@ -3,7 +3,7 @@
 
 import { $, icon, escapeHtml, fmtDuration, store, debounce, makeActivatable, skeletonCards, toast } from './util.js';
 import { fold, matchesQuery } from './names.js';
-import { nav, TAB_LABELS } from './views.js';
+import { nav, TAB_LABELS, backTo, setView } from './views.js';
 import { getCategories, getStreams, loadAll, allLoaded } from './catalog.js';
 import { library, isCatHidden, setCatHidden, continueEntries, removeContinue } from './library.js';
 import { fillThumb, posterFallback, episodeFallback } from './artwork.js';
@@ -14,6 +14,7 @@ import { openTheater } from './theater.js';
 import { openMovie } from './movie.js';
 import { openSeries, getSeriesInfo, flatEpisodes, entrySeries } from './series.js';
 import { playMovie, openEpisode } from './watch.js';
+import { openFinder } from './finder.js';
 
 const LAST_TAB_KEY = 'iptv_last_tab';
 const LIVE_MODE_KEY = 'iptv_live_mode';
@@ -25,7 +26,7 @@ const EMPTY = {
 };
 
 const el = {
-  tabs: document.querySelectorAll('#tabs .tab-btn'),
+  tabs: document.querySelectorAll('#tabs .tab-btn[data-type]'),
   searchBox: $('#search-box'),
   catFilter: $('#cat-filter'),
   categoryList: $('#category-items'),
@@ -35,6 +36,7 @@ const el = {
   shelfRow: $('#shelf-row'),
   gridTitle: $('#grid-title'),
   contentGrid: $('#content-grid'),
+  everywhere: $('#search-everywhere'),
   liveMode: $('#live-mode'),
   guide: $('#guide'),
 };
@@ -46,6 +48,7 @@ const state = {
   displayed: [],
   showHidden: false,
   liveMode: store.getRaw(LIVE_MODE_KEY) === 'guide' ? 'guide' : 'grid',
+  loaded: false, // the catalogue tab has been shown since login
 };
 let gridObserver = null;
 
@@ -61,6 +64,7 @@ const isGuide = () => nav.type === 'live' && state.liveMode === 'guide';
 export function switchTab(type) {
   el.tabs.forEach((b) => b.classList.toggle('active', b.dataset.type === type));
   nav.type = type;
+  state.loaded = true;
   store.setRaw(LAST_TAB_KEY, type);
   el.searchBox.value = '';
   el.catFilter.value = '';
@@ -78,6 +82,23 @@ function showGridSkeleton(type) {
   el.contentGrid.classList.toggle('aspect-wide', type === 'live');
   el.contentGrid.innerHTML = '';
   el.contentGrid.appendChild(skeletonCards(type === 'live' ? 12 : 18, type === 'live'));
+}
+
+// A catalogue tab was clicked; coming from Home, the tab opens where it was left.
+export function openTab(type) {
+  if (nav.view !== 'browse') {
+    history.replaceState({ view: 'browse' }, '');
+    setView('browse');
+    el.searchBox.value = '';
+    el.searchBox.placeholder = `Search ${state.categoryName || ''}`.trim();
+  }
+  if (type !== nav.type || !state.loaded) switchTab(type);
+  else el.tabs.forEach((b) => b.classList.toggle('active', b.dataset.type === type));
+}
+
+// Back on Home: the catalogue keeps its state but has to be reloaded for a new account.
+export function resetBrowse() {
+  state.loaded = false;
 }
 
 async function loadCategories(type) {
@@ -266,6 +287,8 @@ export function applyFilterAndRender() {
   const items = folded ? state.displayed.filter((it) => matchesQuery(it, folded)) : state.displayed;
   if (isGuide()) renderGuide(items, emptyMessage(query));
   else renderGrid(items, type, query);
+  el.everywhere.hidden = query.length < 2;
+  el.everywhere.textContent = `Search everywhere for “${query}”: matches, programmes and channels`;
 }
 
 function applyLiveMode() {
@@ -329,7 +352,7 @@ function renderGrid(items, type, query) {
   if (rendered < items.length) observer.observe(sentinel);
 }
 
-function buildCard(item, type, railItems) {
+export function buildCard(item, type, railItems) {
   const card = document.createElement('div');
   card.className = 'card';
   makeActivatable(card, item.name || 'Untitled');
@@ -382,7 +405,7 @@ function renderShelf() {
   el.shelf.hidden = searching || !cards.length || isGuide();
 }
 
-function buildContinueCard(entry) {
+export function buildContinueCard(entry) {
   const card = document.createElement('div');
   card.className = 'card';
   makeActivatable(card, entry.name);
@@ -426,7 +449,7 @@ function buildContinueCard(entry) {
 
 async function resumeEntry(entry) {
   if (entry.kind === 'movie') {
-    playMovie({ stream_id: entry.id, name: entry.name, stream_icon: entry.image, container_extension: entry.ext }, { push: true, back: TAB_LABELS.vod });
+    playMovie({ stream_id: entry.id, name: entry.name, stream_icon: entry.image, container_extension: entry.ext }, { push: true, back: backTo(TAB_LABELS.vod) });
     return;
   }
   try {
@@ -434,7 +457,7 @@ async function resumeEntry(entry) {
     const series = entrySeries(entry);
     const found = flatEpisodes(info).find((x) => String(x.ep.id) === String(entry.episode.id));
     if (!found) throw new Error('That episode is no longer available');
-    openEpisode(series, info, found.ep, found.season, { push: true, back: TAB_LABELS.series });
+    openEpisode(series, info, found.ep, found.season, { push: true, back: backTo(TAB_LABELS.series) });
   } catch (err) {
     toast(err.message);
   }
@@ -459,9 +482,8 @@ export function tickBrowse() {
 export const focusSearch = () => { el.searchBox.focus(); el.searchBox.select(); };
 
 export function initBrowse() {
-  el.tabs.forEach((btn) => btn.addEventListener('click', () => {
-    if (btn.dataset.type !== nav.type) switchTab(btn.dataset.type);
-  }));
+  el.tabs.forEach((btn) => btn.addEventListener('click', () => openTab(btn.dataset.type)));
+  el.everywhere.addEventListener('click', () => openFinder(el.searchBox.value));
 
   el.liveMode.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
     if (state.liveMode === b.dataset.mode) return;
@@ -474,6 +496,7 @@ export function initBrowse() {
 
   // Filtering a large "All Movies" list on every keystroke made typing laggy.
   const onSearch = debounce(() => {
+    if (nav.view !== 'browse') return; // Home's search box is the match finder
     renderShelf();
     applyFilterAndRender();
   }, 150);

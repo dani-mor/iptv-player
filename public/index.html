@@ -50,16 +50,19 @@
       <div id="brand" class="brand">IPTV</div>
     </div>
     <nav id="tabs" class="segmented">
-      <button class="tab-btn active" data-type="live">Live TV</button>
+      <button id="home-tab" class="tab-btn active">Home</button>
+      <button class="tab-btn" data-type="live">Live TV</button>
       <button class="tab-btn" data-type="vod">Movies</button>
       <button class="tab-btn" data-type="series">TV Shows</button>
     </nav>
     <div class="topbar-right">
       <label id="search-wrap" class="search-wrap">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
-        <input id="search-box" type="search" placeholder="Search" aria-label="Search" />
+        <input id="search-box" type="search" placeholder="Search" aria-label="Search" autocomplete="off" role="combobox" aria-controls="finder" aria-expanded="false" />
         <kbd class="search-key">/</kbd>
       </label>
+      <!-- Match finder results (finder.js) -->
+      <div id="finder" class="finder" role="listbox" aria-label="Search results" hidden></div>
       <span id="account-info" class="account-info"></span>
       <button id="logout-btn" class="icon-btn subtle" title="Log out" aria-label="Log out">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 16l-4-4 4-4M6 12h10"/></svg>
@@ -67,8 +70,38 @@
     </div>
   </header>
 
+  <!-- Home: main match, Sport Center, favourite channels, continue watching (home.js, sports.js) -->
+  <div id="home-view" class="home-view view">
+    <div class="home">
+      <section id="home-featured" class="featured" hidden></section>
+      <section id="home-sports" class="home-section">
+        <div class="row-head">
+          <h3 class="section-title">Sport Center</h3>
+          <div id="sport-chips" class="chips"></div>
+          <button id="sport-edit" class="link-btn">Edit</button>
+        </div>
+        <div id="sport-row" class="h-row events"></div>
+        <p id="sport-note" class="row-note" hidden></p>
+      </section>
+      <section id="home-channels" class="home-section" hidden>
+        <div class="row-head"><h3 id="home-channels-title" class="section-title"></h3></div>
+        <div id="home-channels-row" class="shelf-row channels-row"></div>
+      </section>
+      <div class="home-two">
+        <section id="home-movies" class="home-section" hidden>
+          <div class="row-head"><h3 class="section-title">Continue Watching · Movies</h3></div>
+          <div id="home-movies-row" class="shelf-row"></div>
+        </section>
+        <section id="home-shows" class="home-section" hidden>
+          <div class="row-head"><h3 class="section-title">Continue Watching · Shows</h3></div>
+          <div id="home-shows-row" class="shelf-row"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
   <!-- Browse -->
-  <div id="browse-view" class="main-layout view">
+  <div id="browse-view" class="main-layout view" hidden>
     <aside id="category-list" class="category-list">
       <label class="search-wrap wide cat-filter">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
@@ -89,6 +122,7 @@
         </div>
       </div>
       <div id="content-grid" class="content-grid"></div>
+      <button id="search-everywhere" class="link-btn search-everywhere" hidden></button>
       <div id="guide" class="guide" hidden></div>
     </main>
   </div>
@@ -195,6 +229,27 @@
     </div>
   </div>
 </section>
+
+<!-- Sport Center settings (sports.js) -->
+<div id="sport-sheet" class="picker" hidden>
+  <div class="picker-card sheet-card" role="dialog" aria-label="Sport Center settings">
+    <div class="picker-head">
+      <h3 class="sheet-title">Sport Center</h3>
+      <button id="sport-sheet-close" class="icon-btn subtle" aria-label="Close"></button>
+    </div>
+    <div class="sheet-body">
+      <div class="sheet-label">Your teams <span class="sheet-hint">ranked first</span></div>
+      <div id="sport-teams" class="chips"></div>
+      <form id="sport-team-form" class="team-form">
+        <input id="sport-team-input" type="text" placeholder="Add a team, e.g. Atlético Madrid" aria-label="Add a team" autocomplete="off" />
+        <button type="submit" class="action-btn">Add</button>
+      </form>
+      <div class="sheet-label">Competitions</div>
+      <div id="sport-leagues" class="league-grid"></div>
+      <label class="checkbox-row"><input id="sport-athletes" type="checkbox" /> Rank matches with Spanish tennis players, and F1 / MotoGP races, higher</label>
+    </div>
+  </div>
+</div>
 
 <div id="toast" class="toast" role="status" aria-live="polite" hidden><span id="toast-msg"></span><button id="toast-action" hidden></button></div>
 

@@ -5,6 +5,11 @@ const { Readable, pipeline } = require('stream');
 const { proxiedMediaUrl, isPlaylistUrl, rewritePlaylist } = require('./lib/playlist');
 const { movieTailRange, sendTailInParallel } = require('./lib/tail');
 const { normTitle, cleanShowName, pickShow } = require('./lib/titles');
+const { indexKey, searchGuide, programmesBetween, createGuideStore } = require('./lib/guide-index');
+const sports = require('./lib/sports');
+const { fetchMotoGpEvents } = require('./lib/motogp');
+const { matchEvents, guessChannels, isHomeChannel, countryOf } = require('./lib/fixture-match');
+const { rankEvents } = require('./lib/rank');
 
 // Optional settings (e.g. TMDB_API_KEY) can live in a .env file next to this one.
 try {
@@ -454,6 +459,124 @@ app.get('/api/artwork/show/:id', async (req, res) => {
     artworkCache[key] = entry;
     saveArtworkCache();
     res.json(entry);
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+// ---------- Guide index, match finder and Sport Center ----------
+// The server builds an index of the provider's guide for the sports channels (see
+// lib/guide-index.js) and joins it with fixtures from ESPN / MotoGP.
+
+const GUIDE_LIST_TIMEOUT_MS = 60000;
+const XMLTV_HEADERS_TIMEOUT_MS = 60000;
+const XMLTV_TOTAL_TIMEOUT_MS = 240000;
+const guideStore = createGuideStore({ dir: path.join(__dirname, '.guide-cache') });
+
+// What the guide store needs to (re)build one account's index. Credentials stay in
+// these closures for the length of the build only.
+function guideSource(q) {
+  const base = normalizeServer(q.server);
+  const ua = q.ua || DEFAULT_UA;
+  const playerApi = async (params) => {
+    const { signal, cancel } = withTimeout(GUIDE_LIST_TIMEOUT_MS);
+    try {
+      const qs = new URLSearchParams({ username: q.username, password: q.password, ...params });
+      const r = await fetch(`${base}/player_api.php?${qs}`, { headers: { 'User-Agent': ua }, signal });
+      if (!r.ok) throw new Error(`Provider responded with HTTP ${r.status}`);
+      return await r.json();
+    } finally {
+      cancel();
+    }
+  };
+  const xmltv = async () => {
+    const controller = new AbortController();
+    const headers = setTimeout(() => controller.abort(), XMLTV_HEADERS_TIMEOUT_MS);
+    setTimeout(() => controller.abort(), XMLTV_TOTAL_TIMEOUT_MS).unref();
+    try {
+      const qs = new URLSearchParams({ username: q.username, password: q.password });
+      return await fetch(`${base}/xmltv.php?${qs}`, { headers: { 'User-Agent': ua }, signal: controller.signal });
+    } finally {
+      clearTimeout(headers);
+    }
+  };
+  const extraIds = String(q.ids || '').split(',').filter(Boolean).slice(0, 500);
+  return { key: indexKey(base, q.username), playerApi, xmltv, extraIds };
+}
+
+function requireCreds(req, res) {
+  const { server, username, password } = req.query;
+  if (server && username && password) return true;
+  res.status(400).json({ error: 'server, username and password are required' });
+  return false;
+}
+
+const guideInfo = (index, source) => ({
+  builtAt: index ? index.builtAt : null,
+  source: index ? index.source : null,
+  // The guide's last programme: later matches can only be best guesses.
+  until: index && index.programmes.length ? index.programmes.reduce((m, p) => Math.max(m, p.end), 0) : null,
+  building: guideStore.isBuilding(source.key),
+  error: guideStore.lastError(source.key),
+});
+
+app.get('/api/guide/status', async (req, res) => {
+  if (!requireCreds(req, res)) return;
+  try {
+    const source = guideSource(req.query);
+    const index = await guideStore.get(source);
+    res.json({
+      ...guideInfo(index, source),
+      channels: index ? Object.keys(index.channels).length : 0,
+      programmes: index ? index.programmes.length : 0,
+      stats: index ? index.stats : null,
+    });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.get('/api/guide/search', async (req, res) => {
+  if (!requireCreds(req, res)) return;
+  try {
+    const source = guideSource(req.query);
+    const index = await guideStore.get(source);
+    res.json({ ...guideInfo(index, source), results: searchGuide(index, String(req.query.q || '')) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+const listParam = (v) => String(v || '').split(',').map((x) => x.trim()).filter(Boolean);
+
+app.get('/api/sports/home', async (req, res) => {
+  if (!requireCreds(req, res)) return;
+  try {
+    const now = Date.now();
+    const source = guideSource(req.query);
+    const leagues = req.query.leagues ? listParam(req.query.leagues) : sports.LEAGUES.map((l) => l.id);
+    const [espn, motogp, index] = await Promise.all([
+      sports.fetchEvents(leagues, now),
+      leagues.includes('motogp') ? fetchMotoGpEvents(now).catch((e) => { console.log(`[sports] MotoGP: ${e.message}`); return []; }) : [],
+      guideStore.get(source),
+    ]);
+    const events = [...espn.events, ...motogp];
+    const starts = events.map((e) => e.start);
+    const programmes = programmesBetween(index, Math.min(...starts) - 12 * 3600e3, Math.max(...starts) + 3600e3);
+    const matched = matchEvents(events, programmes);
+    events.forEach((ev) => {
+      const found = matched.get(ev.id) || [];
+      // Found only on foreign channels: the likely local ones follow, labelled as guesses.
+      const local = found.some((w) => isHomeChannel(w.channel));
+      const guesses = !local && index ? guessChannels(ev, index.streams, found.length ? 2 : 6) : [];
+      ev.where = [...found, ...guesses].map((w) => ({ ...w, foreign: isHomeChannel(w.channel) ? '' : countryOf(w.channel) }));
+    });
+    const ranked = rankEvents(events, {
+      now,
+      teams: String(req.query.teams || '').split('|').filter(Boolean),
+      spanishAthletes: req.query.athletes !== '0',
+    });
+    res.json({ ...ranked, guide: guideInfo(index, source), errors: espn.errors, leagues: sports.leagueCatalog() });
   } catch (e) {
     res.status(502).json({ error: e.message });
   }

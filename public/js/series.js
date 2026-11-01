@@ -2,7 +2,7 @@
 
 import { $, icon, yearOf, fmtDuration, parseDurationSecs, actionButton, renderMetaLine, makeActivatable, toast } from './util.js';
 import { apiXtream } from './api.js';
-import { pushView, registerView, onViewChange, TAB_LABELS } from './views.js';
+import { pushView, registerView, onViewChange, TAB_LABELS, backTo } from './views.js';
 import { library } from './library.js';
 import { fillThumb, probeImage, seriesArtwork, seriesArtworkDetails, episodeFallback, seriesRef, setBackground } from './artwork.js';
 import { openEpisode } from './watch.js';
@@ -52,7 +52,7 @@ export const heroSkeleton = () => `
 
 export async function openSeries(item) {
   seriesState = { item, info: null, season: null };
-  pushView('series', TAB_LABELS.series);
+  pushView('series', backTo(TAB_LABELS.series));
   body().innerHTML = heroSkeleton();
   try {
     const info = await getSeriesInfo(item.series_id);

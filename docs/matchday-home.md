@@ -6,10 +6,35 @@ them*), favourite channels, continue watching, and a **match finder** (global se
 over every programme in the provider's guide).
 
 - Visual mockup and plan (private, owned by the user): https://claude.ai/artifact/YAgqBgmCAdMEMHTspvzdeU
-- Status as of 2026-10-31: plan approved by the user, decisions answered (below),
-  **nothing implemented yet**.
+- Status as of 2026-11-01: **steps 1–5 implemented** (see "Results of step 1" below).
+  Not committed yet. Open items are listed at the end of that section.
   The previous release (modules, versions/fail-over, mini player, multiview…) is committed and
   the user reports it works smoothly.
+
+### Results of step 1 (measured 2026-11-01 against the user's provider)
+
+- `xmltv.php` works: 11 MB, 0.5 s, 1,803 channels, 26k programmes. It only reaches about
+  **2 days ahead** (built Sun 14:20, last programme Tue 13:15), so matches later in the week
+  are best guesses until the guide catches up. `get_simple_data_table` was not needed.
+- Sports subset: 59 categories, 2,487 streams, 556 with an EPG id (382 guide channels), 127
+  of those with programmes. About 40% of guide channels are foreign (FR, GR, DE, PT…);
+  matches list `|ES|` / `(ES)` channels first, then untagged, then foreign (with a country badge).
+- Match rate inside the guide's 2 days: football 17/21 (LaLiga 5/5), F1 1/1, NFL 5/13 and NBA
+  2/19 (Spanish channels only carry a few games; that's the guide, not the matcher), tennis
+  low because Spanish titles name the tournament and round, not the players ("Final T2026 ·
+  Torneo de Basilea"); finals and named matches are found via the city + round.
+- Real channel names differ from the first guess table ("M+ LIGA CAMPEONES", no "de"); the
+  table in `lib/fixture-match.js` was rebuilt from the real names.
+- F1 sessions are ESPN `competitions[]` (`type.abbreviation` FP1/FP2/FP3/Qual/Race, plus
+  Sprint ones); MotoGP sessions come from
+  `results/sessions?eventUuid=&categoryUuid=` (types `Q` 1/2, `SPR`, `RAC`).
+
+Open items / ideas: "Spanish athletes" boost defaults to on (tennis players from Spain, F1 /
+MotoGP races), confirm with the user; `versionKey` treats "M+ VAMOS 2 FHD (ES)" and
+"|ES| M+ VAMOS 2 FHD" as different channels (left alone: it drives the live fail-over);
+some feeds fail intermittently at the source (e.g. "|ES| DAZN LALIGA 2 FHD" played, then
+gave repeated decode errors a few minutes later on 2026-11-01); the theater's Versions row
+is the way out.
 
 ---
 

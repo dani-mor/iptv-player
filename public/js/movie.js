@@ -2,7 +2,7 @@
 
 import { $, yearOf, fmtClock, fmtDuration, parseDurationSecs, actionButton, renderMetaLine, toast } from './util.js';
 import { apiXtream } from './api.js';
-import { pushView, registerView, onViewChange, TAB_LABELS } from './views.js';
+import { pushView, registerView, onViewChange, TAB_LABELS, backTo } from './views.js';
 import { library } from './library.js';
 import { fillThumb, firstLoadable, setBackground } from './artwork.js';
 import { heroSkeleton, buildHero, renderCredits } from './series.js';
@@ -29,7 +29,7 @@ export const movieBackdrop = (info) => (Array.isArray(info.backdrop_path) && inf
 
 export async function openMovie(item) {
   movieState = { item, info: null };
-  pushView('movie', TAB_LABELS.vod);
+  pushView('movie', backTo(TAB_LABELS.vod));
   body().innerHTML = heroSkeleton();
   let info = {};
   try {

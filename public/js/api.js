@@ -15,12 +15,15 @@ async function readJson(r) {
   }
 }
 
-export async function apiXtream(action, extra = {}) {
-  const r = await fetch(`/api/xtream?${qs({ ...session.creds, action, ...extra })}`);
+// One of our server's endpoints, with this account's credentials.
+export async function apiServer(path, extra = {}) {
+  const r = await fetch(`${path}?${qs({ ...session.creds, ...extra })}`);
   const data = await readJson(r);
   if (!r.ok || data.error) throw new Error(data.error || `Request failed (${r.status})`);
   return data;
 }
+
+export const apiXtream = (action, extra = {}) => apiServer('/api/xtream', { action, ...extra });
 
 export async function doLogin(c) {
   let r;

@@ -13,7 +13,7 @@ So this app runs a small Node/Express backend that:
 - Calls the provider's `player_api.php` on your behalf and returns JSON to the frontend.
 - Proxies the actual video (live HLS playlists, movies, episodes) with the right `User-Agent`, rewriting `.m3u8` playlists so every segment/variant URL also routes back through the proxy.
 
-Your credentials are only ever sent to the server address you enter. The one other outbound lookup is for TV show artwork (see below).
+Your credentials are only ever sent to the server address you enter. The other outbound lookups are for TV show artwork and sports fixtures (see below); neither sends your credentials.
 
 ## Setup
 
@@ -32,6 +32,11 @@ Run the tests with `npm test`.
 ## Using it
 
 1. Enter your provider's server address (e.g. `http://example.com:8080`), username, and password. After the first login the app opens straight away on later launches, from a local copy of your channel lists, and refreshes them in the background.
+1. The app opens on **Home**:
+   - **Main match and Sport Center**: this week's matches (football's five big leagues, European competitions, Copa del Rey and Spain; tennis, F1, MotoGP, NFL, NBA), ranked with your teams first. Each says which of your channels shows it: *in guide* means it was found in your provider's guide, a dashed *best guess* is a guess from channel names. A foreign copy of a channel shows its country (e.g. `FR`). **Edit** picks your teams and competitions.
+   - **Remind me** on a match or programme shows a reminder with a Watch button 5 minutes before it starts (and again at the start), while the app is open.
+   - Favourite channels (or recently watched ones) and Continue Watching for movies and shows.
+   - The search box on Home is a **match finder**: it searches every programme in your provider's sports guide, this week's matches and the channel names, grouped by when they're on. On the other tabs it filters the list as before, with **Search everywhere** below the results.
 2. If your provider returns `403` errors, open **Advanced** and try a different User-Agent (`IPTVSmartersPlayer` is the default and works with most providers that restrict by player).
 3. Browse **Live TV / Movies / TV Shows** via the category sidebar. Filter the categories with the box at the top, and hide the ones you never use (hover a category, click the eye; hidden ones stay under **Hidden** at the bottom). **All Channels / All Movies / All Shows** loads everything so search covers it all. Search ignores accents (`pelicula` finds `Película`).
 4. Channels open a player with the channel list. Channel names are shown without country prefixes, with their quality (FHD, HD, 4K…) as a badge. When a channel exists in several qualities, **Versions** under the player switches between them, and if one is broken at the provider the app switches to the next version by itself.
@@ -44,13 +49,14 @@ Keyboard:
 | Where | Keys |
 | --- | --- |
 | Everywhere | `/` search, `Esc` go back, `Tab` + `Enter` to move around and open things |
+| Match finder (Home search) | `↑`/`↓` move, `Enter` watch (on now) or set a reminder (later), `Esc` close |
 | Live TV | `↑`/`↓` (or `PgUp`/`PgDn`) change channel, `Backspace` previous channel, `Space`/`K` play/pause, `M` mute, `F` full screen |
 | Movies & episodes | `Space`/`K` play/pause, `←`/`→` seek 10s, `M` mute, `F` full screen |
 | Multiview | `1`–`4` choose whose sound you hear, `F` full screen |
 
 ## Code layout
 
-- `server.js`: the Express server (provider API, media proxy, artwork lookup). Pure helpers live in `lib/` (playlist rewriting, the movie-start speed-up, title matching).
+- `server.js`: the Express server (provider API, media proxy, artwork lookup, guide search, Sport Center). Pure helpers live in `lib/` (playlist rewriting, the movie-start speed-up, title matching, XMLTV parsing, the guide index, fixtures from ESPN / MotoGP, fixture-to-channel matching and ranking).
 - `public/js/`: the frontend as plain ES modules, no build step. `main.js` is the entry point; `live-player.js` holds the live playback and recovery logic shared by the theater and multiview; `names.js` parses channel names.
 - `test/`: `node --test` unit tests for the pure helpers.
 - hls.js is installed from npm at a pinned version and served from `/vendor`, so playback doesn't depend on a CDN.
@@ -60,6 +66,7 @@ Keyboard:
 - Credentials are stored in your browser's `localStorage` (if "remember" is checked) and in server memory only for the duration of each request — nothing is persisted server-side. Channel and category lists are cached in the browser's IndexedDB (cleared on log out). Don't expose this server to the internet without adding your own authentication in front of it.
 - Live channels are requested as HLS (`.m3u8`) and played with [hls.js](https://github.com/video-dev/hls.js) (served locally from `node_modules`). Movies/episodes are played with the browser's native `<video>` element using the container format the provider reports (usually `mp4`); formats the browser can't decode natively (e.g. some `.mkv`/`.avi` streams) won't play — that's a browser codec limitation, not something this app can work around without transcoding.
 - Guide data comes from the provider's EPG. Channels the provider has no EPG for show "No guide information".
+- **Sport Center / match finder:** the server indexes the provider's guide for the channels in sports categories (from `xmltv.php`, or per channel when the provider doesn't serve it), rebuilt every 3 hours and cached per account in `.guide-cache/` (keyed by a hash of server + username; no password is stored). Fixtures come from ESPN's public scoreboard and MotoGP's results API, neither of which needs a key. Guides usually cover only a couple of days ahead, so later matches show best guesses. Which Spanish channel has which competition changes every season; the guess table is in `lib/fixture-match.js`.
 - **TV show artwork:** some providers serve show covers from hosts that are offline. When a provider image fails to load, the server looks the show up instead: by the provider's TMDB id via [Wikidata](https://www.wikidata.org) → [TVmaze](https://www.tvmaze.com), falling back to a TVmaze title search. Only the show's TMDB id / title is sent. Results are cached in `.artwork-cache.json`.
   For exact matches on every show, put a free [TMDB API key](https://www.themoviedb.org/settings/api) in a `.env` file next to `server.js`:
   ```
