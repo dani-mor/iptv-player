@@ -6,8 +6,9 @@ them*), favourite channels, continue watching, and a **match finder** (global se
 over every programme in the provider's guide).
 
 - Visual mockup and plan (private, owned by the user): https://claude.ai/artifact/YAgqBgmCAdMEMHTspvzdeU
-- Status as of 2026-11-01: **steps 1–5 implemented** (see "Results of step 1" below).
-  Not committed yet. Open items are listed at the end of that section.
+- Status as of 2026-11-01: **steps 1–5 implemented and committed** ("Sport Center",
+  then "Fix on sport dashboard" for the refresh fix in 4.1 / 4.5). Open items are listed
+  at the end of "Results of step 1".
   The previous release (modules, versions/fail-over, mini player, multiview…) is committed and
   the user reports it works smoothly.
 
@@ -29,8 +30,7 @@ over every programme in the provider's guide).
   Sprint ones); MotoGP sessions come from
   `results/sessions?eventUuid=&categoryUuid=` (types `Q` 1/2, `SPR`, `RAC`).
 
-Open items / ideas: "Spanish athletes" boost defaults to on (tennis players from Spain, F1 /
-MotoGP races), confirm with the user; `versionKey` treats "M+ VAMOS 2 FHD (ES)" and
+Open items / ideas: `versionKey` treats "M+ VAMOS 2 FHD (ES)" and
 "|ES| M+ VAMOS 2 FHD" as different channels (left alone: it drives the live fail-over);
 some feeds fail intermittently at the source (e.g. "|ES| DAZN LALIGA 2 FHD" played, then
 gave repeated decode errors a few minutes later on 2026-11-01); the theater's Versions row
@@ -45,7 +45,7 @@ is the way out.
 | Question | Answer | What it means for the build |
 | --- | --- | --- |
 | Which sports / competitions? | **Soccer** (the 5 major leagues + European competitions), **Tennis, F1, MotoGP, NFL, NBA** | Leagues and sources in 4.1. MotoGP isn't on ESPN, so it gets its own source. |
-| Their teams (ranked first)? | **Real Madrid, Spain** | Spain = the national football team. Proposed (confirm briefly when Step 4 starts): also boost Spanish athletes (tennis players, F1 drivers, MotoGP riders), see 4.3. |
+| Their teams (ranked first)? | **Real Madrid, Spain** | Spain = the national football team. Also boost Spanish athletes (tennis players from Spain, F1 / MotoGP races), on by default; **confirmed 2026-11-01**. See 4.3. |
 | Desktop notifications / auto-switch at kick-off? | **No** | Reminders are an in-app toast with a Watch button only. No Notification API, no automatic channel switching. |
 | Open the app on Home? | **Yes** | Home is the startup screen; the "last tab" memory only applies when leaving Home for another tab. |
 
@@ -88,7 +88,7 @@ The server usually runs in the background, started by `launch.sh` (log in
 them; **server changes need a restart**:
 
 ```bash
-pkill -f "node server.js"; setsid nohup node server.js > /tmp/iptv-player.log 2>&1 < /dev/null & disown
+pkill -f "^node server.js"; setsid nohup node server.js > /tmp/iptv-player.log 2>&1 < /dev/null & disown
 ```
 
 It listens on loopback only (127.0.0.1 and ::1, port 4040). Restarting interrupts
@@ -288,7 +288,10 @@ GET https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/scoreboard?da
   `status.type.{state: pre|in|post, name,
   shortDetail}`, `status.displayClock`.
 - **Ignore `broadcasts`**: US channels only (ESPN Deportes, Paramount+).
-- Cache per league/day: 60 s if any match is `in`, 30 min otherwise, 6 h for past days.
+- Cache per league/day: 60 s if any match is `in`; otherwise until the next start (at
+  most 30 min), so a match that kicks off isn't served as upcoming; 6 h for past days.
+  An expired answer is served while a fresh one loads only up to 5 min past its expiry;
+  older ones wait for ESPN (and are used only if that fails).
   Run requests one at a time with a small gap (same pattern as the TVmaze queue in
   `server.js`).
 - Keep everything ESPN-specific inside this module so it can be swapped for
@@ -333,7 +336,7 @@ Tests: real ESPN names vs the real title shapes in 2.4, including accents and th
 | Signal | Points |
 | --- | --- |
 | Real Madrid or Spain (national team) plays | +50 |
-| A Spanish athlete plays / races (tennis, F1, MotoGP), if the user confirms (see decisions) | +30 |
+| A Spanish athlete plays / races (tennis, F1, MotoGP); on by default, can be turned off in the settings sheet | +30 |
 | Live now | +40 |
 | Starts within 3 h | +25, fading linearly to 0 |
 | Competition | Champions 30 · LaLiga 25 · Spain national team 25 · F1 / MotoGP race 20 · Premier, Serie A, Bundesliga, Ligue 1, Europa 15 · Copa, Conference 12 · NBA, NFL, tennis 10 |
@@ -370,6 +373,7 @@ Event = { id, league, leagueName, start, state: "pre"|"in"|"post", clock, detail
   Remind me → step 5.
 - Team crests: ESPN `team.logo` URLs through `fillThumb` (falls back to initials).
 - Refresh every 60 s while Home is visible and anything is live; otherwise every 10 min.
+  Also check right away when coming back to Home or to the window, not only on the tick.
   Hook into the existing 30 s tick in `main.js`.
 
 **Done when:** Home shows this week's real matches ranked, each saying where to watch
