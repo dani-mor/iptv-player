@@ -10,10 +10,8 @@ import { badgesHtml } from './channels.js';
 import { parseChannelName } from './names.js';
 import { openTheater } from './theater.js';
 import { openMultiview } from './multiview.js';
+import { sportsRefreshDue } from './timing.js';
 
-const LIVE_REFRESH_MS = 60e3;
-const IDLE_REFRESH_MS = 10 * 60e3;
-const GUIDE_WAIT_REFRESH_MS = 20e3; // while the server is still building the guide index
 const MAX_WHERE_SHOWN = 3;
 const SOON_MS = 15 * 60e3; // "Watch" appears this long before the start
 const GROUPS = [
@@ -78,15 +76,7 @@ export function resetSports() {
   filter = 'all';
 }
 
-function refreshDue() {
-  if (dataKey !== settingsKey()) return true;
-  if (!data) return Date.now() - loadedAt > GUIDE_WAIT_REFRESH_MS;
-  const age = Date.now() - loadedAt;
-  if (!data.guide.builtAt) return age > GUIDE_WAIT_REFRESH_MS;
-  const live = data.events.some((ev) => ev.state === 'in');
-  const startingSoon = data.events.some((ev) => ev.state === 'pre' && ev.start - Date.now() < 5 * 60e3);
-  return age > (live || startingSoon ? LIVE_REFRESH_MS : IDLE_REFRESH_MS);
-}
+const refreshDue = () => sportsRefreshDue({ data, loadedAt, current: dataKey === settingsKey() });
 
 // Every 30 s on Home, and on coming back to it: refresh live scores when due, and keep
 // times and countdowns current.

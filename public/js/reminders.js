@@ -7,9 +7,8 @@ import { toast } from './util.js';
 import { library, updateReminder, pruneReminders } from './library.js';
 import { sportsEvents } from './sports.js';
 import { openTheater } from './theater.js';
+import { dueReminder } from './timing.js';
 
-const EARLY_MS = 5 * 60e3;
-const SHOW_UNTIL_MS = 2 * 3600e3; // after the start, roughly while it's still on
 const TOAST_MS = 8000;
 
 // The channels to offer: a fixture's may have been found in the guide since it was set.
@@ -35,15 +34,10 @@ function watch(r) {
 // Called on the 30 s tick and when the app becomes visible. One toast at a time.
 export function checkReminders(now = Date.now()) {
   pruneReminders(now);
-  const due = library.reminders
-    .filter((r) => !r.acted && now < r.start + SHOW_UNTIL_MS && (
-      (!r.shown && now >= r.start - EARLY_MS) || (r.shown === 'soon' && now >= r.start)))
-    .sort((a, b) => a.start - b.start);
-  const r = due[0];
-  if (!r) return;
-  const started = now >= r.start;
-  updateReminder(r.id, { shown: started ? 'start' : 'soon' });
-  const mins = Math.max(1, Math.round((r.start - now) / 60e3));
-  const msg = started ? `${r.title} has started` : `${r.title} starts in ${mins} min`;
+  const due = dueReminder(library.reminders, now);
+  if (!due) return;
+  const { reminder: r, phase, mins } = due;
+  updateReminder(r.id, { shown: phase });
+  const msg = phase === 'start' ? `${r.title} has started` : `${r.title} starts in ${mins} min`;
   toast(r.sub ? `${msg} · ${r.sub}` : msg, { label: 'Watch', duration: TOAST_MS, run: () => watch(r) });
 }

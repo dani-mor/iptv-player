@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { Readable, pipeline } = require('stream');
 const { proxiedMediaUrl, isPlaylistUrl, rewritePlaylist } = require('./lib/playlist');
-const { movieTailRange, sendTailInParallel } = require('./lib/tail');
+const { movieTailRange, knownTail, startTail, sendTail, tailPrefetcher } = require('./lib/tail');
 const { normTitle, cleanShowName, pickShow } = require('./lib/titles');
 const { indexKey, searchGuide, programmesBetween, createGuideStore } = require('./lib/guide-index');
 const sports = require('./lib/sports');
@@ -124,7 +124,32 @@ async function fetchUpstream(url, options) {
   }
 }
 
-async function handleMediaProxy(req, res, targetUrl, ua) {
+// Movie and episode files 302 to a VOD edge, and starting or seeking one makes several
+// range requests in a row. Going straight to the edge we were sent to last time saves that
+// hop on each; if the edge stops answering (its link may expire), ask the original URL again.
+const EDGE_TTL_MS = 5 * 60 * 1000;
+const fileEdges = new Map(); // file URL -> { url, at }
+
+async function fetchViaEdge(targetUrl, options) {
+  const edge = fileEdges.get(targetUrl);
+  if (edge && Date.now() - edge.at < EDGE_TTL_MS) {
+    const r = await fetch(edge.url, options).catch((e) => {
+      if (options.signal.aborted) throw e;
+      return null;
+    });
+    if (r && r.ok) return r;
+    r?.body?.cancel().catch(() => {});
+  }
+  fileEdges.delete(targetUrl);
+  const r = await fetchUpstream(targetUrl, options);
+  if (r.ok && r.redirected) {
+    for (const [k, v] of fileEdges) if (Date.now() - v.at >= EDGE_TTL_MS) fileEdges.delete(k);
+    fileEdges.set(targetUrl, { url: r.url, at: Date.now() });
+  }
+  return r;
+}
+
+async function handleMediaProxy(req, res, targetUrl, ua, { rememberEdge = false } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   // Release the provider connection as soon as the player stops listening
@@ -132,6 +157,14 @@ async function handleMediaProxy(req, res, targetUrl, ua) {
   res.on('close', () => controller.abort());
 
   try {
+    // A movie tail we already have (or are fetching) needs no round trip to the provider.
+    const known = knownTail(targetUrl, req.headers.range);
+    if (known) {
+      clearTimeout(timer);
+      await sendTail(res, known, controller.signal);
+      return;
+    }
+
     const headers = { 'User-Agent': ua };
     if (req.headers.range) headers['Range'] = req.headers.range;
 
@@ -139,7 +172,7 @@ async function handleMediaProxy(req, res, targetUrl, ua) {
     // differently. Playlist redirects go to the browser so hls.js keeps reloading the edge
     // it started on; following them here would land each reload on a random edge and
     // break the live timeline.
-    const upstream = await fetchUpstream(targetUrl, {
+    const upstream = await (rememberEdge ? fetchViaEdge : fetchUpstream)(targetUrl, {
       headers,
       redirect: isPlaylistUrl(targetUrl) ? 'manual' : 'follow',
       signal: controller.signal,
@@ -167,7 +200,8 @@ async function handleMediaProxy(req, res, targetUrl, ua) {
     const tail = movieTailRange(req.headers.range, upstream);
     if (tail) {
       upstream.body?.cancel().catch(() => {});
-      await sendTailInParallel(res, upstream.url || targetUrl, targetUrl, ua, tail, contentType, controller.signal);
+      const entry = startTail(upstream.url || targetUrl, targetUrl, ua, tail, contentType);
+      await sendTail(res, { entry, from: tail.start }, controller.signal);
       return;
     }
 
@@ -182,7 +216,10 @@ async function handleMediaProxy(req, res, targetUrl, ua) {
     }
     // pipeline (unlike .pipe) tears down both sides on error or client disconnect;
     // with .pipe an upstream reset is an unhandled stream error that kills the process.
-    pipeline(Readable.fromWeb(upstream.body), res, () => {});
+    const prefetch = tailPrefetcher(req.headers.range, upstream, targetUrl, ua);
+    const body = Readable.fromWeb(upstream.body);
+    if (prefetch) pipeline(body, prefetch, res, () => {});
+    else pipeline(body, res, () => {});
   } catch (e) {
     clearTimeout(timer);
     if (res.headersSent || res.destroyed) {
@@ -208,7 +245,7 @@ app.get('/stream', async (req, res) => {
     const base = normalizeServer(server);
     const extension = ext || (type === 'live' ? 'm3u8' : 'mp4');
     const targetUrl = `${base}/${pathSeg}/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${id}.${extension}`;
-    await handleMediaProxy(req, res, targetUrl, ua || DEFAULT_UA);
+    await handleMediaProxy(req, res, targetUrl, ua || DEFAULT_UA, { rememberEdge: type !== 'live' });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
