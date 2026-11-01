@@ -53,5 +53,9 @@ export function tickHome() {
 export function initHome() {
   registerView('home', el.view);
   initSports();
-  onViewChange((prev, next) => { if (next === 'home') refreshHome(); });
+  onViewChange((prev, next) => {
+    if (next !== 'home') return;
+    refreshHome();
+    tickSports();
+  });
 }

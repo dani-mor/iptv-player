@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { teamVariants, matchEvents, guessChannels, NOT_LIVE } = require('../lib/fixture-match');
 const { scoreEvent, rankEvents, isTopMatch } = require('../lib/rank');
-const { teamEvent, tennisEvents, f1Events } = require('../lib/sports');
+const { teamEvent, tennisEvents, f1Events, scoreboardTtl, cachedJson } = require('../lib/sports');
 
 const H = 3600e3;
 const KICKOFF = Date.UTC(2026, 10, 1, 20, 0);
@@ -157,4 +157,27 @@ test('ESPN scoreboard events become Events', () => {
     { id: 3, date: '2026-11-01T20:00Z', type: { abbreviation: 'Race' }, status: { type: { state: 'pre' } } },
   ] }, { id: 'f1', name: 'Formula 1', group: 'f1' });
   assert.deepEqual(f1.map((e) => e.session), ['Qualifying', 'Race']);
+});
+
+test('scoreboard ttl: a minute while live, otherwise until the next start (max 30 min)', () => {
+  const now = KICKOFF - 10 * 60e3;
+  const board = (state, date = KICKOFF) => ({ events: [{ date: new Date(date).toISOString(), status: { type: { state } }, competitions: [{ date: new Date(date).toISOString(), status: { type: { state } } }] }] });
+  const ttl = scoreboardTtl('20261101', '20261101');
+  assert.equal(ttl(board('in'), now), 60e3);
+  assert.equal(ttl(board('pre'), now), 10 * 60e3);
+  assert.equal(ttl(board('pre', KICKOFF + 5 * H), now), 30 * 60e3);
+  assert.equal(ttl(board('pre', now - 20 * 60e3), now), 60e3); // past its start, not live yet
+  assert.equal(ttl(board('post'), now), 30 * 60e3);
+  assert.equal(scoreboardTtl('20261031', '20261101')(board('post'), now), 6 * H);
+});
+
+test('cachedJson: a long-stale answer waits for the fresh one', async (t) => {
+  let n = 0;
+  t.mock.method(global, 'fetch', async () => ({ ok: true, json: async () => ({ n: ++n }) }));
+  const url = 'https://example.test/stale';
+  assert.deepEqual(await cachedJson(url, () => 1), { n: 1 });
+  await new Promise((r) => setTimeout(r, 80)); // let the queue slot free up
+  const realNow = Date.now;
+  t.mock.method(Date, 'now', () => realNow() + 10 * 60e3); // well past ttl + grace
+  assert.deepEqual(await cachedJson(url, () => 1), { n: 2 });
 });

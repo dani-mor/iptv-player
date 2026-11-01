@@ -88,7 +88,8 @@ function refreshDue() {
   return age > (live || startingSoon ? LIVE_REFRESH_MS : IDLE_REFRESH_MS);
 }
 
-// Every 30 s on Home: refresh live scores when due, and keep times and countdowns current.
+// Every 30 s on Home, and on coming back to it: refresh live scores when due, and keep
+// times and countdowns current.
 export function tickSports() {
   if (refreshDue()) load();
   else renderSports();

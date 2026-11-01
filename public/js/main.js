@@ -251,7 +251,9 @@ onLibraryChange(() => {
   if (nav.view === 'home') refreshHome();
 });
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && !el.appScreen.hidden && session.creds) checkReminders();
+  if (document.hidden || el.appScreen.hidden || !session.creds) return;
+  checkReminders();
+  if (nav.view === 'home') tickHome();
 });
 
 setInterval(() => {
